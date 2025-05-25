@@ -43,39 +43,80 @@ class TransformerNetwork(nn.Module):
             nn.Linear(pred_len * 2, pred_len)
         )
 
+
+        self.fc5 = nn.Linear(seq_len, pred_len * 4)
+        self.avgpool1 = nn.AvgPool1d(kernel_size=2)
+        self.ln1 = nn.LayerNorm(pred_len * 2)
+        self.fc6 = nn.Linear(pred_len * 2, pred_len)
+        self.avgpool2 = nn.AvgPool1d(kernel_size=2)
+        self.ln2 = nn.LayerNorm(pred_len // 2)
+        self.fc7 = nn.Linear(pred_len // 2, pred_len)
+        
+        # --- Final concat layer ---
+        self.fc8 = nn.Linear(pred_len * 2, pred_len)
+
     def forward(self, s, t):
         # s, t: [Batch, Input, Channel]
-        B = s.shape[0]  # Batch size
-        C = s.shape[2]  # Channel size
+        B, I, C = s.shape
         
-        # Process each channel independently
-        outputs = []
-        for i in range(C):
-            # Extract single channel and reshape
-            x = s[:, :, i].unsqueeze(-1)  # [Batch, Input, 1]
+        # # Process each channel independently
+        # outputs = []
+        # for i in range(C):
+        #     # Extract single channel and reshape
+        #     x = s[:, :, i].unsqueeze(-1)  # [Batch, Input, 1]
             
-            # Project input to d_model dimensions
-            x = self.input_projection(x)  # [Batch, Input, d_model]
+        #     # Project input to d_model dimensions
+        #     x = self.input_projection(x)  # [Batch, Input, d_model]
             
-            # Add positional encoding
-            x = self.pos_encoder(x)
+        #     # Add positional encoding
+        #     x = self.pos_encoder(x)
             
-            # Transformer expects: [Input, Batch, d_model]
-            x = x.permute(1, 0, 2)
+        #     # Transformer expects: [Input, Batch, d_model]
+        #     x = x.permute(1, 0, 2)
             
-            # Pass through transformer
-            x = self.transformer_encoder(x)
+        #     # Pass through transformer
+        #     x = self.transformer_encoder(x)
             
-            # Reshape back: [Batch, Input, d_model]
-            x = x.permute(1, 0, 2)
+        #     # Reshape back: [Batch, Input, d_model]
+        #     x = x.permute(1, 0, 2)
             
-            # Flatten and decode
-            x = x.reshape(B, -1)  # [Batch, Input * d_model]
-            x = self.decoder(x)  # [Batch, pred_len]
+        #     # Flatten and decode
+        #     x = x.reshape(B, -1)  # [Batch, Input * d_model]
+        #     x = self.decoder(x)  # [Batch, pred_len]
             
-            outputs.append(x)
+        #     outputs.append(x)
         
-        # Stack all channel outputs
-        x = torch.stack(outputs, dim=-1)  # [Batch, pred_len, Channel]
+        # # Stack all channel outputs
+        # x = torch.stack(outputs, dim=-1)  # [Batch, pred_len, Channel]
         
-        return x 
+        # return x 
+
+
+        s = s.permute(0, 2, 1).reshape(B * C, I, 1)  # -> [B*C, seq_len, 1]
+        s = self.input_projection(s)                # -> [B*C, seq_len, d_model]
+        s = self.pos_encoder(s)
+        s = s.permute(1, 0, 2)                      # -> [seq_len, B*C, d_model]
+        s = self.transformer_encoder(s)
+        s = s.permute(1, 0, 2)                      # -> [B*C, seq_len, d_model]
+        s = s.reshape(B * C, -1)                    # -> [B*C, seq_len*d_model]
+        s = self.decoder(s)                         # -> [B*C, pred_len]
+        s = s.view(B, C, self.pred_len).permute(0, 2, 1)  # -> [B, pred_len, C]
+
+        # =============== Trend (MLP) ============================
+        t = t.permute(0, 2, 1).reshape(B * C, I)     # -> [B*C, seq_len]
+        t = self.fc5(t)                              # -> [B*C, pred_len * 4]
+        t = self.avgpool1(t.unsqueeze(1)).squeeze(1) # -> [B*C, pred_len * 2]
+        t = self.ln1(t)
+        t = self.fc6(t)
+        t = self.avgpool2(t.unsqueeze(1)).squeeze(1) # -> [B*C, pred_len // 2]
+        t = self.ln2(t)
+        t = self.fc7(t)                              # -> [B*C, pred_len]
+        t = t.view(B, C, self.pred_len).permute(0, 2, 1)  # -> [B, pred_len, C]
+
+        # =============== Fusion =============================
+        x = torch.cat([s, t], dim=1)                 # [B, pred_len*2, C]
+        x = x.permute(0, 2, 1)                       # [B, C, pred_len*2]
+        x = self.fc8(x)                              # [B, C, pred_len]
+        x = x.permute(0, 2, 1)                       # [B, pred_len, C]
+
+        return x
