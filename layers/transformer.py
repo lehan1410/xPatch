@@ -110,9 +110,7 @@ class TransformerNetwork(nn.Module):
         s = s.unfold(dimension=-1, size=self.patch_len, step=self.stride)  # [B*C, patch_num, patch_len]
 
         # Patch Embedding: apply input_projection for each patch
-        s = s.unsqueeze(-1)  # [B*C, patch_num, patch_len, 1]
         s = self.input_projection(s)  # [B*C, patch_num, patch_len, d_model]
-        s = s.squeeze(2)  # [B*C, patch_num, d_model]
 
         # Positional Encoding
         s = self.pos_encoder(s)  # [B*C, patch_num, d_model]
