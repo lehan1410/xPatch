@@ -37,7 +37,7 @@ class TransformerNetwork(nn.Module):
             self.padding_patch_layer = None
         
         # Input projection
-        self.input_projection = nn.Linear(1, d_model)  # Project single feature to d_model dimensions
+        self.input_projection = nn.Linear(self.patch_len, d_model)  # Project single feature to d_model dimensions
         
         # Positional Encoding
         self.pos_encoder = PositionalEncoding(d_model)
