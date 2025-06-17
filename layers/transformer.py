@@ -17,13 +17,24 @@ class PositionalEncoding(nn.Module):
         return x + self.pe[:, :x.size(1)]
 
 class TransformerNetwork(nn.Module):
-    def __init__(self, seq_len, pred_len, d_model=512, nhead=8, num_layers=3, dropout=0.1):
+    def __init__(self, seq_len, pred_len, patch_len, stride, padding_patch, d_model=512, nhead=8, num_layers=3, dropout=0.1):
         super(TransformerNetwork, self).__init__()
         
         # Parameters
         self.seq_len = seq_len
         self.pred_len = pred_len
         self.d_model = d_model
+
+        # Patching params
+        self.patch_len = patch_len
+        self.stride = stride
+        self.padding_patch = padding_patch
+        self.patch_num = (seq_len - patch_len) // stride + 1
+        if padding_patch == 'end':
+            self.padding_patch_layer = nn.ReplicationPad1d((0, stride))
+            self.patch_num += 1
+        else:
+            self.padding_patch_layer = None
         
         # Input projection
         self.input_projection = nn.Linear(1, d_model)  # Project single feature to d_model dimensions
@@ -91,16 +102,42 @@ class TransformerNetwork(nn.Module):
         
         # return x 
 
+        # --- PATCHING SEASONALITY ---
+        s = s.permute(0, 2, 1)  # [B, C, seq_len]
+        s = s.reshape(B * C, I) # [B*C, seq_len]
+        if self.padding_patch == 'end':
+            s = self.padding_patch_layer(s)
+        s = s.unfold(dimension=-1, size=self.patch_len, step=self.stride)  # [B*C, patch_num, patch_len]
 
-        s = s.permute(0, 2, 1).reshape(B * C, I, 1)  # -> [B*C, seq_len, 1]
-        s = self.input_projection(s)                # -> [B*C, seq_len, d_model]
-        s = self.pos_encoder(s)
-        s = s.permute(1, 0, 2)                      # -> [seq_len, B*C, d_model]
+        # Patch Embedding: apply input_projection for each patch
+        s = s.unsqueeze(-1)  # [B*C, patch_num, patch_len, 1]
+        s = self.input_projection(s)  # [B*C, patch_num, patch_len, d_model]
+        s = s.squeeze(2)  # [B*C, patch_num, d_model]
+
+        # Positional Encoding
+        s = self.pos_encoder(s)  # [B*C, patch_num, d_model]
+
+        # Transformer expects: [patch_num, B*C, d_model]
+        s = s.permute(1, 0, 2)  # [patch_num, B*C, d_model]
         s = self.transformer_encoder(s)
-        s = s.permute(1, 0, 2)                      # -> [B*C, seq_len, d_model]
-        s = s.reshape(B * C, -1)                    # -> [B*C, seq_len*d_model]
-        s = self.decoder(s)                         # -> [B*C, pred_len]
-        s = s.view(B, C, self.pred_len).permute(0, 2, 1)  # -> [B, pred_len, C]
+        s = s.permute(1, 0, 2)  # [B*C, patch_num, d_model]
+
+        # Flatten and decode
+        s = s.reshape(B * C, -1)  # [B*C, patch_num*d_model]
+        # Adjust decoder input size if needed
+        s = self.decoder(s)  # [B*C, pred_len]
+        s = s.view(B, C, self.pred_len).permute(0, 2, 1)  # [B, pred_len, C]
+
+        # # Season
+        # s = s.permute(0, 2, 1).reshape(B * C, I, 1)  # -> [B*C, seq_len, 1]
+        # s = self.input_projection(s)                # -> [B*C, seq_len, d_model]
+        # s = self.pos_encoder(s)
+        # s = s.permute(1, 0, 2)                      # -> [seq_len, B*C, d_model]
+        # s = self.transformer_encoder(s)
+        # s = s.permute(1, 0, 2)                      # -> [B*C, seq_len, d_model]
+        # s = s.reshape(B * C, -1)                    # -> [B*C, seq_len*d_model]
+        # s = self.decoder(s)                         # -> [B*C, pred_len]
+        # s = s.view(B, C, self.pred_len).permute(0, 2, 1)  # -> [B, pred_len, C]
 
         # =============== Trend (MLP) ============================
         t = t.permute(0, 2, 1).reshape(B * C, I)     # -> [B*C, seq_len]
