@@ -49,7 +49,7 @@ class TransformerNetwork(nn.Module):
         
         # Decoder (prediction head)
         self.decoder = nn.Sequential(
-            nn.Linear(d_model * seq_len, pred_len * 2),
+            nn.Linear(d_model * self.patch_num, pred_len * 2),
             nn.GELU(),
             nn.Linear(pred_len * 2, pred_len)
         )
