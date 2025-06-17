@@ -21,6 +21,12 @@ class Model(nn.Module):
         num_layers = getattr(configs, 'num_layers', 3)  # number of transformer layers
         dropout = getattr(configs, 'dropout', 0.1)      # dropout rate
 
+
+        # Patching
+        patch_len = configs.patch_len
+        stride = configs.stride
+        padding_patch = configs.padding_patch
+
         # Normalization
         self.revin = configs.revin
         self.revin_layer = RevIN(c_in, affine=True, subtract_last=False)
@@ -31,7 +37,7 @@ class Model(nn.Module):
         beta = configs.beta         # smoothing factor for DEMA
 
         self.decomp = DECOMP(self.ma_type, alpha, beta)
-        self.net = TransformerNetwork(seq_len, pred_len, d_model, nhead, num_layers, dropout)
+        self.net = TransformerNetwork(seq_len, pred_len, patch_len, stride, padding_patch, d_model, nhead, num_layers, dropout)
 
     def forward(self, x):
         # x: [Batch, Input, Channel]
