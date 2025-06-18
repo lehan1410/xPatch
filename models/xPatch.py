@@ -3,7 +3,7 @@ import torch.nn as nn
 import math
 
 from layers.decomp import DECOMP
-from layers.transformer import TransformerNetwork
+from layers.transformer_rmlp import TransformerRMLPNetwork
 from layers.revin import RevIN
 
 class Model(nn.Module):
@@ -36,8 +36,12 @@ class Model(nn.Module):
         alpha = configs.alpha       # smoothing factor for EMA
         beta = configs.beta         # smoothing factor for DEMA
 
+        # Set channel info in configs for TransformerRMLPNetwork
+        configs.channel = c_in
+        configs.rev = getattr(configs, 'rev', True)  # Enable RevIN by default for RMLP
+
         self.decomp = DECOMP(self.ma_type, alpha, beta)
-        self.net = TransformerNetwork(seq_len, pred_len, patch_len, stride, padding_patch, d_model, nhead, num_layers, dropout)
+        self.net = TransformerRMLPNetwork(seq_len, pred_len, patch_len, stride, padding_patch, d_model, nhead, num_layers, dropout, configs)
 
     def forward(self, x):
         # x: [Batch, Input, Channel]
