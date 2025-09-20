@@ -48,7 +48,7 @@ parser.add_argument('--stride', type=int, default=8, help='stride')
 parser.add_argument('--padding_patch', default='end', help='None: None; end: padding on the end')
 
 # Moving Average
-parser.add_argument('--ma_type', type=str, default='ema', help='reg, ema, dema')
+parser.add_argument('--ma_type', type=str, default='ema', help='reg, ema, dema, multi_emd')
 parser.add_argument('--alpha', type=float, default=0.3, help='alpha')
 parser.add_argument('--beta', type=float, default=0.3, help='beta')
 

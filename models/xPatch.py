@@ -36,7 +36,13 @@ class Model(nn.Module):
         alpha = configs.alpha       # smoothing factor for EMA
         beta = configs.beta         # smoothing factor for DEMA
 
-        self.decomp = DECOMP(self.ma_type, alpha, beta)
+        mb_k_small = getattr(configs, 'mb_k_small', 7)
+        mb_k_large = getattr(configs, 'mb_k_large', 31)
+        emd_imfs   = getattr(configs, 'emd_imfs', 2)
+
+        self.decomp = DECOMP(self.ma_type, alpha, beta,
+                             seq_len=seq_len, enc_in=c_in,
+                             mb_k_small=mb_k_small, mb_k_large=mb_k_large, emd_imfs=emd_imfs)
         self.net = TransformerNetwork(seq_len, pred_len, patch_len, stride, padding_patch, d_model, nhead, num_layers, dropout)
 
     def forward(self, x):
