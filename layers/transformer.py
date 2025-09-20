@@ -36,16 +36,6 @@ class TransformerNetwork(nn.Module):
         else:
             self.padding_patch_layer = None
         
-        self.t_patch_len = max(patch_len, patch_len * 2)
-        self.t_stride = max(stride, stride * 2)
-        self.t_padding_patch = padding_patch
-        self.t_patch_num = (seq_len - self.t_patch_len) // self.t_stride + 1
-        if self.t_padding_patch == 'end':
-            self.t_padding_patch_layer = nn.ReplicationPad1d((0, self.t_stride))
-            self.t_patch_num += 1
-        else:
-            self.t_padding_patch_layer = None
-        
         # Input projection
         self.input_projection = nn.Linear(self.patch_len, d_model)  # Project single feature to d_model dimensions
         
@@ -54,12 +44,9 @@ class TransformerNetwork(nn.Module):
         
         # Transformer Encoder
         encoder_layers = nn.TransformerEncoderLayer(d_model=d_model, nhead=nhead, 
-                                                    dim_feedforward=4*d_model, dropout=dropout, batch_first=False)
+                                                  dim_feedforward=4*d_model, dropout=dropout)
         self.transformer_encoder = nn.TransformerEncoder(encoder_layers, num_layers=num_layers)
         
-        self.token_norm_s = nn.LayerNorm(d_model)
-        self.dropout_s = nn.Dropout(dropout)
-
         # Decoder (prediction head)
         self.decoder = nn.Sequential(
             nn.Linear(d_model * self.patch_num, pred_len * 2),
@@ -67,23 +54,16 @@ class TransformerNetwork(nn.Module):
             nn.Linear(pred_len * 2, pred_len)
         )
 
-        t_layers = max(1, num_layers // 2)
-        self.t_input_projection = nn.Linear(self.t_patch_len, d_model)
+        self.t_input_projection = nn.Linear(self.patch_len, d_model)
+        t_layers = max(1, num_layers // 2)  # nhẹ hơn season
         t_enc_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=nhead,
-                                                 dim_feedforward=4*d_model, dropout=dropout, batch_first=False)
+                                                    dim_feedforward=4*d_model, dropout=dropout)
         self.t_transformer_encoder = nn.TransformerEncoder(t_enc_layer, num_layers=t_layers)
-        self.token_norm_t = nn.LayerNorm(d_model)
-        self.dropout_t = nn.Dropout(dropout)
         self.t_decoder = nn.Sequential(
-            nn.Linear(d_model * self.t_patch_num, pred_len * 2),
+            nn.Linear(d_model * self.patch_num, pred_len * 2),
             nn.GELU(),
             nn.Linear(pred_len * 2, pred_len)
         )
-
-        # Cross-fusion: season attends to trend tokens
-        self.cross_attn = nn.MultiheadAttention(d_model, nhead, dropout=dropout, batch_first=False)
-        self.cross_ln = nn.LayerNorm(d_model)
-        self.cross_drop = nn.Dropout(dropout)
 
 
         # self.fc5 = nn.Linear(seq_len, pred_len * 4)
@@ -106,79 +86,63 @@ class TransformerNetwork(nn.Module):
             x = self.padding_patch_layer(x)
         x = x.unfold(dimension=-1, size=self.patch_len, step=self.stride)
         return x, B, C
-    
-    def _patch_trend(self, x):
-        # x: [B, C, seq_len] -> [B*C, t_patch_num, t_patch_len]
-        B, C, I = x.shape
-        x = x.reshape(B * C, I)
-        if self.t_padding_patch == 'end':
-            x = self.t_padding_patch_layer(x)
-        x = x.unfold(dimension=-1, size=self.t_patch_len, step=self.t_stride)
-        return x, B, C
-    
-    def _encode_season_tokens(self, s):
-        # s: [B, I, C] -> tokens [P, B*C, d]
+
+    def _season_branch(self, s):
+        # s: [B, I, C] -> [B, pred_len, C]
         B, I, C = s.shape
-        s = s.permute(0, 2, 1)                     # [B, C, I]
-        s, _, _ = self._patch(s)                    # [B*C, P, Lp]
-        s = self.input_projection(s)               # [B*C, P, d]
-        s = self.pos_encoder(s)
-        s = self.token_norm_s(s)
-        s = self.dropout_s(s)
-        s = s.permute(1, 0, 2)                     # [P, B*C, d]
-        s = self.transformer_encoder(s)            # [P, B*C, d]
+        s = s.permute(0, 2, 1)                  # [B, C, I]
+        s, Bc, Cc = self._patch(s)               # [B*C, P, Lp]
+        s = self.input_projection(s)            # [B*C, P, d_model]
+        s = self.pos_encoder(s)                 # [B*C, P, d_model]
+        s = s.permute(1, 0, 2)                  # [P, B*C, d_model]
+        s = self.transformer_encoder(s)
+        s = s.permute(1, 0, 2).reshape(B * C, -1)  # [B*C, P*d_model]
+        s = self.decoder(s).view(B, C, self.pred_len).permute(0, 2, 1)
         return s
     
-    def _encode_trend_tokens(self, t):
-        # t: [B, I, C] -> tokens [Pt, B*C, d]
+    def _trend_branch_mlp(self, t):
+        # t: [B, I, C] -> [B, pred_len, C]
         B, I, C = t.shape
-        t = t.permute(0, 2, 1)                     # [B, C, I]
-        t, _, _ = self._patch_trend(t)              # [B*C, Pt, Lt]
-        t = self.t_input_projection(t)             # [B*C, Pt, d]
-        t = self.pos_encoder(t)                    # reuse PE
-        t = self.token_norm_t(t)
-        t = self.dropout_t(t)
-        t = t.permute(1, 0, 2)                     # [Pt, B*C, d]
-        t = self.t_transformer_encoder(t)
+        t = t.permute(0, 2, 1).reshape(B * C, I)
+        t = self.fc5(t)
+        t = self.avgpool1(t.unsqueeze(1)).squeeze(1)
+        t = self.ln1(t)
+        t = self.fc6(t)
+        t = self.avgpool2(t.unsqueeze(1)).squeeze(1)
+        t = self.ln2(t)
+        t = self.fc7(t)
+        t = t.view(B, C, self.pred_len).permute(0, 2, 1)
         return t
-    
-    def _decode(self, tokens, is_trend=False, B=None, C=None):
-        # tokens: [P, B*C, d] -> [B, pred_len, C]
-        P, BC, d = tokens.shape
-        x = tokens.permute(1, 0, 2).reshape(BC, P * d)  # [B*C, P*d]
-        if is_trend:
-            x = self.t_decoder(x)
-        else:
-            x = self.decoder(x)
-        x = x.view(B, C, self.pred_len).permute(0, 2, 1)
-        return x
+
+    def _trend_branch_attn(self, t):
+        # t: [B, I, C] -> [B, pred_len, C]
+        B, I, C = t.shape
+        t = t.permute(0, 2, 1)                  # [B, C, I]
+        t, Bc, Cc = self._patch(t)               # [B*C, P, Lp]
+        t = self.t_input_projection(t)          # [B*C, P, d_model]
+        t = self.pos_encoder(t)                 # có thể dùng chung PE
+        t = t.permute(1, 0, 2)                  # [P, B*C, d_model]
+        t = self.t_transformer_encoder(t)
+        t = t.permute(1, 0, 2).reshape(B * C, -1)  # [B*C, P*d_model]
+        t = self.t_decoder(t).view(B, C, self.pred_len).permute(0, 2, 1)
+        return t
 
     def forward(self, s, t):
         # s, t: [Batch, Input, Channel]
         B, I, C = s.shape
 
-        s_tok = self._encode_season_tokens(s)        # [P,  B*C, d]
-        t_tok = self._encode_trend_tokens(t)
+        s = self._season_branch(s)
+        t = self._trend_branch_attn(t)
 
-        s_q = s_tok
-        t_kv = t_tok
-        s_fused, _ = self.cross_attn(query=s_q, key=t_kv, value=t_kv, need_weights=False)
-        s_tok = self.cross_ln(s_tok + self.cross_drop(s_fused))  # residual
-
-        # Decode to predictions
-        s_out = self._decode(s_tok, is_trend=False, B=B, C=C)    # [B, pred_len, C]
-        t_out = self._decode(t_tok, is_trend=True,  B=B, C=C)    # [B, pred_len, C]
-
-        # Gate fusion per-time per-channel
-        g_in = torch.stack([s_out, t_out], dim=-1)               # [B, pred_len, C, 2]
-        g = torch.sigmoid(self.gate_fc(g_in)).squeeze(-1)        # [B, pred_len, C]
-        s_w = g * s_out
-        t_w = (1.0 - g) * t_out
+        g_in = torch.stack([s, t], dim=-1)              # [B, pred_len, C, 2]
+        g = torch.sigmoid(self.gate_fc(g_in)).squeeze(-1)  # [B, pred_len, C]
+        s_w = g * s
+        t_w = (1.0 - g) * t
 
         # Projection head
-        x = torch.cat([s_w, t_w], dim=1)                         # [B, 2*pred_len, C]
-        x = x.permute(0, 2, 1)                                   # [B, C, 2*pred_len]
-        x = self.fc8(x).permute(0, 2, 1)                         # [B, pred_len, C]
+        x = torch.cat([s_w, t_w], dim=1)                # [B, 2*pred_len, C]
+        x = x.permute(0, 2, 1)                          # [B, C, 2*pred_len]
+        x = self.fc8(x).permute(0, 2, 1)                # [B, pred_len, C]
         return x
         
         # # Process each channel independently
