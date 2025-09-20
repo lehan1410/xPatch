@@ -3,7 +3,9 @@ import torch.nn as nn
 import math
 
 from layers.decomp import DECOMP
-from layers.transformer import TransformerNetwork
+from layers.network import Network
+# from layers.network_mlp import NetworkMLP # For ablation study with MLP-only stream
+# from layers.network_cnn import NetworkCNN # For ablation study with CNN-only stream
 from layers.revin import RevIN
 
 class Model(nn.Module):
@@ -15,13 +17,6 @@ class Model(nn.Module):
         pred_len = configs.pred_len # prediction length (96, 192, 336, 720)
         c_in = configs.enc_in       # input channels
 
-        # Transformer parameters
-        d_model = getattr(configs, 'd_model', 512)  # dimension of model
-        nhead = getattr(configs, 'nhead', 8)        # number of heads in multi-head attention
-        num_layers = getattr(configs, 'num_layers', 3)  # number of transformer layers
-        dropout = getattr(configs, 'dropout', 0.1)      # dropout rate
-
-
         # Patching
         patch_len = configs.patch_len
         stride = configs.stride
@@ -29,21 +24,17 @@ class Model(nn.Module):
 
         # Normalization
         self.revin = configs.revin
-        self.revin_layer = RevIN(c_in, affine=True, subtract_last=False)
+        self.revin_layer = RevIN(c_in,affine=True,subtract_last=False)
 
         # Moving Average
         self.ma_type = configs.ma_type
-        alpha = configs.alpha       # smoothing factor for EMA
-        beta = configs.beta         # smoothing factor for DEMA
+        alpha = configs.alpha       # smoothing factor for EMA (Exponential Moving Average)
+        beta = configs.beta         # smoothing factor for DEMA (Double Exponential Moving Average)
 
-        mb_k_small = getattr(configs, 'mb_k_small', 7)
-        mb_k_large = getattr(configs, 'mb_k_large', 31)
-        emd_imfs   = getattr(configs, 'emd_imfs', 2)
-
-        self.decomp = DECOMP(self.ma_type, alpha, beta,
-                             seq_len=seq_len, enc_in=c_in,
-                             mb_k_small=mb_k_small, mb_k_large=mb_k_large, emd_imfs=emd_imfs)
-        self.net = TransformerNetwork(seq_len, pred_len, patch_len, stride, padding_patch, d_model, nhead, num_layers, dropout)
+        self.decomp = DECOMP(self.ma_type, alpha, beta)
+        self.net = Network(seq_len, pred_len, patch_len, stride, padding_patch)
+        # self.net_mlp = NetworkMLP(seq_len, pred_len) # For ablation study with MLP-only stream
+        # self.net_cnn = NetworkCNN(seq_len, pred_len, patch_len, stride, padding_patch) # For ablation study with CNN-only stream
 
     def forward(self, x):
         # x: [Batch, Input, Channel]
@@ -52,8 +43,10 @@ class Model(nn.Module):
         if self.revin:
             x = self.revin_layer(x, 'norm')
 
-        if self.ma_type == 'reg':   # If no decomposition
+        if self.ma_type == 'reg':   # If no decomposition, directly pass the input to the network
             x = self.net(x, x)
+            # x = self.net_mlp(x) # For ablation study with MLP-only stream
+            # x = self.net_cnn(x) # For ablation study with CNN-only stream
         else:
             seasonal_init, trend_init = self.decomp(x)
             x = self.net(seasonal_init, trend_init)
