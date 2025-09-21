@@ -22,12 +22,30 @@ class ChannelSEGate(nn.Module):
         self.fc1 = nn.Linear(channels, hidden)
         self.act = nn.GELU()
         self.fc2 = nn.Linear(hidden, channels)
+        # gentle gate init: bias ~ 1.5 -> sigmoid ≈ 0.82
+        nn.init.constant_(self.fc2.bias, 1.5)
+        nn.init.xavier_uniform_(self.fc1.weight, gain=0.7)
+        nn.init.xavier_uniform_(self.fc2.weight, gain=0.7)
 
     def forward(self, x_bci):
         # x_bci: [B, C, T]
         m = x_bci.mean(dim=-1)  # [B, C]
         g = torch.sigmoid(self.fc2(self.act(self.fc1(m))))  # [B, C]
         return g.unsqueeze(-1)  # [B, C, 1]
+
+
+def _make_norm(norm_type: str, channels: int):
+    norm_type = (norm_type or 'bn').lower()
+    if norm_type == 'bn':
+        return nn.BatchNorm1d(channels)
+    if norm_type == 'in':
+        return nn.InstanceNorm1d(channels, affine=True)
+    if norm_type == 'gn':
+        # fallback to LayerNorm-like behavior across channels/time by using 1 group
+        return nn.GroupNorm(1, channels)
+    if norm_type == 'none':
+        return nn.Identity()
+    return nn.BatchNorm1d(channels)
 
 
 class MultiScaleDWConv(nn.Module):
@@ -38,7 +56,8 @@ class MultiScaleDWConv(nn.Module):
     - Residual fusion: out = x + alpha * (avg_scales + beta * attn_mix)
     """
     def __init__(self, channels: int, dilations=(1, 2, 4), kernel_size: int = 3,
-                 attn_tau: float = 1.5, res_alpha: float = 1.0, mix_beta: float = 1.0):
+                 attn_tau: float = 1.5, res_alpha: float = 1.0, mix_beta: float = 1.0,
+                 norm_type: str = 'bn', dropout: float = 0.0):
         super().__init__()
         assert kernel_size % 2 == 1, "kernel_size must be odd"
         self.scales = tuple(dilations)
@@ -50,13 +69,14 @@ class MultiScaleDWConv(nn.Module):
             self.convs.append(
                 nn.Conv1d(channels, channels, kernel_size=kernel_size, padding=pad, dilation=d, groups=channels)
             )
-            self.bns.append(nn.BatchNorm1d(channels))
+            self.bns.append(_make_norm(norm_type, channels))
         self.act = nn.GELU()
         # inter-scale attention head (shared across channels, no channel mixing)
         self.scale_attn = nn.Linear(self.S * 2, self.S)
         self.attn_tau = attn_tau
         self.res_alpha = res_alpha
         self.mix_beta = mix_beta
+        self.drop = nn.Dropout(dropout) if dropout and dropout > 0 else nn.Identity()
 
     def forward(self, x_bci):
         # x_bci: [B, C, T]
@@ -83,8 +103,38 @@ class MultiScaleDWConv(nn.Module):
         fused_avg = sum(ys) / self.S
 
         fused = fused_avg + self.mix_beta * fused_attn               # [B, C, T]
+        fused = self.drop(fused)
         out = x_bci + self.res_alpha * fused                         # residual to preserve original signal
         return out
+
+
+class TemporalPyramidPooling(nn.Module):
+    """Depthwise temporal smoothing with multiple window sizes (residual).
+    Uses fixed average filters with reflect padding to keep length.
+    """
+    def __init__(self, channels: int, windows=(3, 7, 15), gamma: float = 0.5):
+        super().__init__()
+        self.channels = channels
+        self.windows = tuple(int(w) for w in windows)
+        self.gamma = gamma
+        # register fixed averaging kernels as buffers
+        self.kernels = nn.ParameterList()
+        for k in self.windows:
+            weight = torch.ones(channels, 1, k) / float(k)
+            conv = nn.Conv1d(channels, channels, kernel_size=k, groups=channels, bias=False)
+            conv.weight = nn.Parameter(weight, requires_grad=False)
+            self.kernels.append(conv)
+
+    def forward(self, x_bct):
+        y_sum = 0.0
+        for conv in self.kernels:
+            k = conv.kernel_size[0]
+            pad = (k - 1) // 2
+            x_pad = F.pad(x_bct, (pad, pad), mode='reflect')
+            y = conv(x_pad)
+            y_sum = y_sum + y
+        y_avg = y_sum / len(self.kernels)
+        return x_bct + self.gamma * y_avg
 
 class Network(nn.Module):
     def __init__(self, seq_len, pred_len, patch_len, stride, padding_patch, c_in: int):
@@ -150,8 +200,14 @@ class Network(nn.Module):
         self.ch_gate = ChannelSEGate(c_in, hidden_ratio=4)
 
         # New: Multi-scale temporal preprocessing (inner- & inter-scale learning)
-        self.ms_season = MultiScaleDWConv(c_in, dilations=(1, 2, 4, 8, 16), kernel_size=3)
-        self.ms_trend = MultiScaleDWConv(c_in, dilations=(1, 2, 4, 8, 16, 24), kernel_size=5)
+        self.ms_season = MultiScaleDWConv(c_in, dilations=(1, 2, 4, 8, 16), kernel_size=3,
+                                          attn_tau=1.5, res_alpha=1.0, mix_beta=1.0,
+                                          norm_type='bn', dropout=0.1)
+        self.ms_trend = MultiScaleDWConv(c_in, dilations=(1, 2, 4, 8, 16, 24), kernel_size=5,
+                                         attn_tau=1.7, res_alpha=1.0, mix_beta=0.8,
+                                         norm_type='bn', dropout=0.1)
+        # Optional: temporal pyramid smoothing residual for trend
+        self.tpp_trend = TemporalPyramidPooling(c_in, windows=(5, 11, 21), gamma=0.4)
 
     def forward(self, s, t):
         # x: [Batch, Input, Channel]
@@ -169,6 +225,7 @@ class Network(nn.Module):
         # Multi-scale temporal processing (inner- & inter-scale)
         s = self.ms_season(s)  # [B, C, I]
         t = self.ms_trend(t)   # [B, C, I]
+        t = self.tpp_trend(t)  # residual pyramid smoothing for trend
         
         # Channel split for channel independence
         B = s.shape[0] # Batch size
