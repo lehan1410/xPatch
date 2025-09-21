@@ -1,12 +1,76 @@
 import torch
 from torch import nn
+import torch.nn.functional as F
+
+
+class GEGLULinear(nn.Module):
+    """Linear layer with GEGLU gating: proj to 2*out, split, GELU on gate, elementwise product."""
+    def __init__(self, in_dim: int, out_dim: int):
+        super().__init__()
+        self.proj = nn.Linear(in_dim, out_dim * 2)
+
+    def forward(self, x):
+        u, v = self.proj(x).chunk(2, dim=-1)
+        return u * F.gelu(v)
+
+
+class ChannelSEGate(nn.Module):
+    """Inter-channel gating without value mixing: uses cross-channel MLP to produce per-channel scales in [0,1]."""
+    def __init__(self, channels: int, hidden_ratio: int = 4):
+        super().__init__()
+        hidden = max(4, channels // hidden_ratio)
+        self.fc1 = nn.Linear(channels, hidden)
+        self.act = nn.GELU()
+        self.fc2 = nn.Linear(hidden, channels)
+
+    def forward(self, x_bci):
+        # x_bci: [B, C, T]
+        m = x_bci.mean(dim=-1)  # [B, C]
+        g = torch.sigmoid(self.fc2(self.act(self.fc1(m))))  # [B, C]
+        return g.unsqueeze(-1)  # [B, C, 1]
+
+
+class MultiScaleDWConv(nn.Module):
+    """Depthwise separable temporal conv pyramid with dilations and BN+GELU; channel-wise processing."""
+    def __init__(self, channels: int, dilations=(1, 2, 4), kernel_size: int = 3):
+        super().__init__()
+        assert kernel_size % 2 == 1, "kernel_size must be odd"
+        self.scales = tuple(dilations)
+        self.convs = nn.ModuleList()
+        self.bns = nn.ModuleList()
+        for d in self.scales:
+            pad = d * (kernel_size // 2)
+            self.convs.append(
+                nn.Conv1d(channels, channels, kernel_size=kernel_size, padding=pad, dilation=d, groups=channels)
+            )
+            self.bns.append(nn.BatchNorm1d(channels))
+        self.act = nn.GELU()
+
+    def forward(self, x_bci):
+        # x_bci: [B, C, T]
+        ys = []
+        for conv, bn in zip(self.convs, self.bns):
+            y = conv(x_bci)
+            y = self.act(bn(y))
+            ys.append(y)  # each [B, C, T]
+        # Inter-scale fusion: attention over scales per (B,C)
+        # scores from time-avg features
+        scores = torch.stack([y.mean(dim=-1) for y in ys], dim=1)  # [B, S, C]
+        weights = torch.softmax(scores, dim=1)  # sum across scales = 1
+        # weighted sum
+        fused = 0.0
+        for k, y in enumerate(ys):
+            w = weights[:, k, :].unsqueeze(-1)  # [B, C, 1]
+            fused = fused + w * y
+        return fused  # [B, C, T]
 
 class Network(nn.Module):
-    def __init__(self, seq_len, pred_len, patch_len, stride, padding_patch):
+    def __init__(self, seq_len, pred_len, patch_len, stride, padding_patch, c_in: int):
         super(Network, self).__init__()
 
         # Parameters
         self.pred_len = pred_len
+        self.c_in = c_in
 
         # Non-linear Stream
         # Patching
@@ -41,7 +105,8 @@ class Network(nn.Module):
         # Flatten Head
         self.flatten1 = nn.Flatten(start_dim=-2)
         self.fc3 = nn.Linear(self.patch_num * patch_len, pred_len * 2)
-        self.gelu4 = nn.GELU()
+        # improved linear head with GEGLU
+        self.head_geglu = GEGLULinear(pred_len * 2, pred_len * 2)
         self.fc4 = nn.Linear(pred_len * 2, pred_len)
 
         # Linear Stream
@@ -59,6 +124,13 @@ class Network(nn.Module):
         # Streams Concatination
         self.fc8 = nn.Linear(pred_len * 2, pred_len)
 
+        # New: Inter-channel gate (does not mix values; scales per channel using cross-channel context)
+        self.ch_gate = ChannelSEGate(c_in, hidden_ratio=4)
+
+        # New: Multi-scale temporal preprocessing (inner- & inter-scale learning)
+        self.ms_season = MultiScaleDWConv(c_in, dilations=(1, 2, 4), kernel_size=3)
+        self.ms_trend = MultiScaleDWConv(c_in, dilations=(1, 2, 4), kernel_size=5)
+
     def forward(self, s, t):
         # x: [Batch, Input, Channel]
         # s - seasonality
@@ -66,6 +138,15 @@ class Network(nn.Module):
         
         s = s.permute(0,2,1) # to [Batch, Channel, Input]
         t = t.permute(0,2,1) # to [Batch, Channel, Input]
+
+        # Inter-channel gating (uses cross-channel info, preserves per-channel independence via scaling)
+        gate = self.ch_gate(s)  # [B, C, 1]
+        s = s * gate
+        t = t * gate
+
+        # Multi-scale temporal processing (inner- & inter-scale)
+        s = self.ms_season(s)  # [B, C, I]
+        t = self.ms_trend(t)   # [B, C, I]
         
         # Channel split for channel independence
         B = s.shape[0] # Batch size
@@ -105,7 +186,7 @@ class Network(nn.Module):
         # Flatten Head
         s = self.flatten1(s)
         s = self.fc3(s)
-        s = self.gelu4(s)
+        s = self.head_geglu(s)
         s = self.fc4(s)
 
         # Linear Stream
