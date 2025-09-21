@@ -128,8 +128,8 @@ class Network(nn.Module):
         self.ch_gate = ChannelSEGate(c_in, hidden_ratio=4)
 
         # New: Multi-scale temporal preprocessing (inner- & inter-scale learning)
-        self.ms_season = MultiScaleDWConv(c_in, dilations=(1, 2, 4), kernel_size=3)
-        self.ms_trend = MultiScaleDWConv(c_in, dilations=(1, 2, 4), kernel_size=5)
+        self.ms_season = MultiScaleDWConv(c_in, dilations=(1, 2, 4, 8, 16, 32, 48), kernel_size=3)
+        self.ms_trend = MultiScaleDWConv(c_in, dilations=(1, 2, 4, 8, 16, 24, 32), kernel_size=5)
 
     def forward(self, s, t):
         # x: [Batch, Input, Channel]
