@@ -31,11 +31,18 @@ class ChannelSEGate(nn.Module):
 
 
 class MultiScaleDWConv(nn.Module):
-    """Depthwise separable temporal conv pyramid with dilations and BN+GELU; channel-wise processing."""
-    def __init__(self, channels: int, dilations=(1, 2, 4), kernel_size: int = 3):
+    """Depthwise temporal conv pyramid with dilations + robust inter-scale fusion.
+
+    - Inner-scale: per-scale depthwise Conv1d (+BN+GELU)
+    - Inter-scale: temperature-scaled softmax attention over scales using mean+std pooling across time
+    - Residual fusion: out = x + alpha * (avg_scales + beta * attn_mix)
+    """
+    def __init__(self, channels: int, dilations=(1, 2, 4), kernel_size: int = 3,
+                 attn_tau: float = 1.5, res_alpha: float = 1.0, mix_beta: float = 1.0):
         super().__init__()
         assert kernel_size % 2 == 1, "kernel_size must be odd"
         self.scales = tuple(dilations)
+        self.S = len(self.scales)
         self.convs = nn.ModuleList()
         self.bns = nn.ModuleList()
         for d in self.scales:
@@ -45,6 +52,11 @@ class MultiScaleDWConv(nn.Module):
             )
             self.bns.append(nn.BatchNorm1d(channels))
         self.act = nn.GELU()
+        # inter-scale attention head (shared across channels, no channel mixing)
+        self.scale_attn = nn.Linear(self.S * 2, self.S)
+        self.attn_tau = attn_tau
+        self.res_alpha = res_alpha
+        self.mix_beta = mix_beta
 
     def forward(self, x_bci):
         # x_bci: [B, C, T]
@@ -52,17 +64,27 @@ class MultiScaleDWConv(nn.Module):
         for conv, bn in zip(self.convs, self.bns):
             y = conv(x_bci)
             y = self.act(bn(y))
-            ys.append(y)  # each [B, C, T]
-        # Inter-scale fusion: attention over scales per (B,C)
-        # scores from time-avg features
-        scores = torch.stack([y.mean(dim=-1) for y in ys], dim=1)  # [B, S, C]
-        weights = torch.softmax(scores, dim=1)  # sum across scales = 1
-        # weighted sum
-        fused = 0.0
+            ys.append(y)  # [B, C, T]
+
+        # Inter-scale fusion: compute weights from mean and std over time per scale
+        means = torch.stack([y.mean(dim=-1) for y in ys], dim=2)     # [B, C, S]
+        stds  = torch.stack([y.var(dim=-1, unbiased=False).clamp_min(1e-8).sqrt() for y in ys], dim=2)  # [B, C, S]
+        feats = torch.cat([means, stds], dim=2)                      # [B, C, 2S]
+        logits = self.scale_attn(feats)                              # [B, C, S]
+        weights = torch.softmax(logits / self.attn_tau, dim=-1)      # [B, C, S]
+
+        # Weighted sum across scales
+        fused_attn = 0.0
         for k, y in enumerate(ys):
-            w = weights[:, k, :].unsqueeze(-1)  # [B, C, 1]
-            fused = fused + w * y
-        return fused  # [B, C, T]
+            w = weights[:, :, k].unsqueeze(-1)  # [B, C, 1]
+            fused_attn = fused_attn + w * y
+
+        # Average mix as a stable baseline
+        fused_avg = sum(ys) / self.S
+
+        fused = fused_avg + self.mix_beta * fused_attn               # [B, C, T]
+        out = x_bci + self.res_alpha * fused                         # residual to preserve original signal
+        return out
 
 class Network(nn.Module):
     def __init__(self, seq_len, pred_len, patch_len, stride, padding_patch, c_in: int):
@@ -128,8 +150,8 @@ class Network(nn.Module):
         self.ch_gate = ChannelSEGate(c_in, hidden_ratio=4)
 
         # New: Multi-scale temporal preprocessing (inner- & inter-scale learning)
-        self.ms_season = MultiScaleDWConv(c_in, dilations=(1, 2, 4, 8, 16, 32, 48), kernel_size=3)
-        self.ms_trend = MultiScaleDWConv(c_in, dilations=(1, 2, 4, 8, 16, 24, 32), kernel_size=5)
+        self.ms_season = MultiScaleDWConv(c_in, dilations=(1, 2, 4, 8, 16), kernel_size=3)
+        self.ms_trend = MultiScaleDWConv(c_in, dilations=(1, 2, 4, 8, 16, 24), kernel_size=5)
 
     def forward(self, s, t):
         # x: [Batch, Input, Channel]
