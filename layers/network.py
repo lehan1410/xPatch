@@ -1,167 +1,94 @@
 import torch
 from torch import nn
 import torch.nn.functional as F
-from .conv_backbone import ConvBackbone
-
-
-class GEGLULinear(nn.Module):
-    """Linear layer with GEGLU gating: proj to 2*out, split, GELU on gate, elementwise product."""
-    def __init__(self, in_dim: int, out_dim: int):
-        super().__init__()
-        self.proj = nn.Linear(in_dim, out_dim * 2)
-
-    def forward(self, x):
-        u, v = self.proj(x).chunk(2, dim=-1)
-        return u * F.gelu(v)
-
-
-class ChannelSEGate(nn.Module):
-    """Inter-channel gating without value mixing: uses cross-channel MLP to produce per-channel scales in [0,1]."""
-    def __init__(self, channels: int, hidden_ratio: int = 4):
-        super().__init__()
-        hidden = max(4, channels // hidden_ratio)
-        self.fc1 = nn.Linear(channels, hidden)
-        self.act = nn.GELU()
-        self.fc2 = nn.Linear(hidden, channels)
-        # gentle gate init: bias ~ 1.5 -> sigmoid ≈ 0.82
-        nn.init.constant_(self.fc2.bias, 1.5)
-        nn.init.xavier_uniform_(self.fc1.weight, gain=0.7)
-        nn.init.xavier_uniform_(self.fc2.weight, gain=0.7)
-
-    def forward(self, x_bci):
-        # x_bci: [B, C, T]
-        m = x_bci.mean(dim=-1)  # [B, C]
-        g = torch.sigmoid(self.fc2(self.act(self.fc1(m))))  # [B, C]
-        return g.unsqueeze(-1)  # [B, C, 1]
-
-
-def _make_norm(norm_type: str, channels: int):
-    norm_type = (norm_type or 'bn').lower()
-    if norm_type == 'bn':
-        return nn.BatchNorm1d(channels)
-    if norm_type == 'in':
-        return nn.InstanceNorm1d(channels, affine=True)
-    if norm_type == 'gn':
-        # fallback to LayerNorm-like behavior across channels/time by using 1 group
-        return nn.GroupNorm(1, channels)
-    if norm_type == 'none':
-        return nn.Identity()
-    return nn.BatchNorm1d(channels)
 
 
 class MultiScaleDWConv(nn.Module):
-    """Depthwise temporal conv pyramid with dilations + robust inter-scale fusion.
-
-    - Inner-scale: per-scale depthwise Conv1d (+BN+GELU)
-    - Inter-scale: temperature-scaled softmax attention over scales using mean+std pooling across time
-    - Residual fusion: out = x + alpha * (avg_scales + beta * attn_mix)
-    """
-    def __init__(self, channels: int, dilations=(1, 2, 4), kernel_size: int = 3,
-                 attn_tau: float = 1.5, res_alpha: float = 1.0, mix_beta: float = 1.0,
-                 norm_type: str = 'bn', dropout: float = 0.0):
+    """Multiscale depthwise conv with linear inner/inter scale fusion (no attention)."""
+    def __init__(self, channels: int, dilations=(1, 2, 4, 8), kernel_size: int = 3, 
+                 norm_type: str = 'bn', dropout: float = 0.1):
         super().__init__()
         assert kernel_size % 2 == 1, "kernel_size must be odd"
         self.scales = tuple(dilations)
         self.S = len(self.scales)
+        
+        # Per-scale depthwise convs
         self.convs = nn.ModuleList()
         self.bns = nn.ModuleList()
         for d in self.scales:
             pad = d * (kernel_size // 2)
             self.convs.append(
-                nn.Conv1d(channels, channels, kernel_size=kernel_size, padding=pad, dilation=d, groups=channels)
+                nn.Conv1d(channels, channels, kernel_size=kernel_size, 
+                         padding=pad, dilation=d, groups=channels)
             )
-            self.bns.append(_make_norm(norm_type, channels))
+            if norm_type == 'bn':
+                self.bns.append(nn.BatchNorm1d(channels))
+            elif norm_type == 'ln':
+                self.bns.append(nn.GroupNorm(1, channels))  # LayerNorm-like
+            else:
+                self.bns.append(nn.Identity())
+        
         self.act = nn.GELU()
-        # inter-scale attention head (shared across channels, no channel mixing)
-        self.scale_attn = nn.Linear(self.S * 2, self.S)
-        self.attn_tau = attn_tau
-        self.res_alpha = res_alpha
-        self.mix_beta = mix_beta
-        self.drop = nn.Dropout(dropout) if dropout and dropout > 0 else nn.Identity()
-
+        
+        # Linear inter-scale fusion (no attention)
+        self.scale_weights = nn.Parameter(torch.ones(self.S) / self.S)  # learnable weights
+        self.drop = nn.Dropout(dropout)
+        
     def forward(self, x_bci):
         # x_bci: [B, C, T]
         ys = []
         for conv, bn in zip(self.convs, self.bns):
             y = conv(x_bci)
             y = self.act(bn(y))
-            ys.append(y)  # [B, C, T]
-
-        # Inter-scale fusion: compute weights from mean and std over time per scale
-        means = torch.stack([y.mean(dim=-1) for y in ys], dim=2)     # [B, C, S]
-        stds  = torch.stack([y.var(dim=-1, unbiased=False).clamp_min(1e-8).sqrt() for y in ys], dim=2)  # [B, C, S]
-        feats = torch.cat([means, stds], dim=2)                      # [B, C, 2S]
-        logits = self.scale_attn(feats)                              # [B, C, S]
-        weights = torch.softmax(logits / self.attn_tau, dim=-1)      # [B, C, S]
-
-        # Weighted sum across scales
-        fused_attn = 0.0
-        for k, y in enumerate(ys):
-            w = weights[:, :, k].unsqueeze(-1)  # [B, C, 1]
-            fused_attn = fused_attn + w * y
-
-        # Average mix as a stable baseline
-        fused_avg = sum(ys) / self.S
-
-        fused = fused_avg + self.mix_beta * fused_attn               # [B, C, T]
+            ys.append(y)
+        
+        # Linear combination with learnable weights
+        weights = F.softmax(self.scale_weights, dim=0)  # normalize to sum=1
+        fused = sum(w * y for w, y in zip(weights, ys))
         fused = self.drop(fused)
-        out = x_bci + self.res_alpha * fused                         # residual to preserve original signal
-        return out
+        
+        # Residual connection
+        return x_bci + fused
 
 
-class TemporalPyramidPooling(nn.Module):
-    """Depthwise temporal smoothing with multiple window sizes (residual).
-    Uses fixed average filters with reflect padding to keep length.
-    """
-    def __init__(self, channels: int, windows=(3, 7, 15), gamma: float = 0.5):
+class DirectLinearStream(nn.Module):
+    """Direct linear mapping inspired by RLinear - simple but effective."""
+    def __init__(self, seq_len: int, pred_len: int, dropout: float = 0.1):
         super().__init__()
-        self.channels = channels
-        self.windows = tuple(int(w) for w in windows)
-        self.gamma = gamma
-        # register fixed averaging kernels as buffers
-        self.kernels = nn.ParameterList()
-        for k in self.windows:
-            weight = torch.ones(channels, 1, k) / float(k)
-            conv = nn.Conv1d(channels, channels, kernel_size=k, groups=channels, bias=False)
-            conv.weight = nn.Parameter(weight, requires_grad=False)
-            self.kernels.append(conv)
-
-    def forward(self, x_bct):
-        y_sum = 0.0
-        for conv in self.kernels:
-            k = conv.kernel_size[0]
-            pad = (k - 1) // 2
-            x_pad = F.pad(x_bct, (pad, pad), mode='reflect')
-            y = conv(x_pad)
-            y_sum = y_sum + y
-        y_avg = y_sum / len(self.kernels)
-        return x_bct + self.gamma * y_avg
+        self.linear1 = nn.Linear(seq_len, seq_len)
+        self.gelu = nn.GELU()
+        self.linear2 = nn.Linear(seq_len, pred_len)
+        self.dropout = nn.Dropout(dropout)
+    
+    def forward(self, x_bci: torch.Tensor) -> torch.Tensor:
+        # x_bci: [B, C, T] -> permute to [B, C, T] for per-channel processing
+        x = self.linear1(x_bci)
+        x = self.gelu(x)
+        x = self.dropout(x)
+        x = self.linear2(x)  # [B, C, pred_len]
+        return x
 
 
 class InterChannelLinear(nn.Module):
-    """Pure linear inter-channel mixer with shared time projection and low-rank channel mixing.
-
-    Steps:
-    1) Shared time projection Linear(T->pred_len) applied per channel
-    2) Optional low-rank linear mixing across channels at each time step (no attention)
-    """
-    def __init__(self, seq_len: int, pred_len: int, c_in: int, rank: int | None = None, dropout: float = 0.1):
+    """Pure linear inter-channel mixer with low-rank factorization."""
+    def __init__(self, seq_len: int, pred_len: int, c_in: int, rank: int = None, dropout: float = 0.1):
         super().__init__()
-        self.time_proj = nn.Linear(seq_len, pred_len)  # shared across channels
+        self.time_proj = nn.Linear(seq_len, pred_len)
         r = min(8, c_in) if rank is None else min(rank, c_in)
-        # Low-rank channel mixing: C -> r -> C (applied per output step)
+        # Low-rank channel mixing
         self.W1 = nn.Linear(c_in, r, bias=False)
         self.W2 = nn.Linear(r, c_in, bias=False)
         self.drop = nn.Dropout(dropout)
-
+        
     def forward(self, x_bct: torch.Tensor) -> torch.Tensor:
         # x_bct: [B, C, T]
-        y = self.time_proj(x_bct)              # [B, C, pred_len]
-        # channel mixing per time step (operate on channel dim)
-        y_perm = y.transpose(1, 2)             # [B, pred_len, C]
-        y_mix = self.W2(self.drop(self.W1(y_perm)))  # [B, pred_len, C]
-        y_out = (y_perm + y_mix).transpose(1, 2)     # residual, back to [B, C, pred_len]
+        y = self.time_proj(x_bct)  # [B, C, pred_len]
+        # Channel mixing per time step
+        y_perm = y.transpose(1, 2)  # [B, pred_len, C]
+        y_mix = self.W2(self.drop(self.W1(y_perm)))
+        y_out = (y_perm + y_mix).transpose(1, 2)  # residual + back to [B, C, pred_len]
         return y_out
+
 
 class Network(nn.Module):
     def __init__(self, seq_len, pred_len, patch_len, stride, padding_patch, c_in: int):
@@ -171,13 +98,45 @@ class Network(nn.Module):
         self.pred_len = pred_len
         self.c_in = c_in
 
-        # Non-linear Stream (replaced by ConvBackbone)
+        # Multiscale preprocessing (applied before channel split)
+        self.ms_season = MultiScaleDWConv(c_in, dilations=(1, 2, 4, 8, 16), kernel_size=3, dropout=0.1)
+        self.ms_trend = MultiScaleDWConv(c_in, dilations=(1, 3, 6, 12, 24), kernel_size=5, dropout=0.1)
+
+        # Non-linear Stream
+        # Patching
         self.patch_len = patch_len
         self.stride = stride
         self.padding_patch = padding_patch
-        self.conv_backbone = ConvBackbone(c_in=c_in, seq_len=seq_len, pred_len=pred_len,
-                                          patch_len=patch_len, stride=stride, padding_patch=padding_patch,
-                                          n_layers=4, d_model=64, d_ff=256, dropout=0.1, head_dropout=0.1)
+        self.dim = patch_len * patch_len
+        self.patch_num = (seq_len - patch_len)//stride + 1
+        if padding_patch == 'end': # can be modified to general case
+            self.padding_patch_layer = nn.ReplicationPad1d((0, stride)) 
+            self.patch_num += 1
+
+        # Patch Embedding
+        self.fc1 = nn.Linear(patch_len, self.dim)
+        self.gelu1 = nn.GELU()
+        self.bn1 = nn.BatchNorm1d(self.patch_num)
+        
+        # CNN Depthwise
+        self.conv1 = nn.Conv1d(self.patch_num, self.patch_num,
+                               patch_len, patch_len, groups=self.patch_num)
+        self.gelu2 = nn.GELU()
+        self.bn2 = nn.BatchNorm1d(self.patch_num)
+
+        # Residual Stream
+        self.fc2 = nn.Linear(self.dim, patch_len)
+
+        # CNN Pointwise
+        self.conv2 = nn.Conv1d(self.patch_num, self.patch_num, 1, 1)
+        self.gelu3 = nn.GELU()
+        self.bn3 = nn.BatchNorm1d(self.patch_num)
+
+        # Flatten Head
+        self.flatten1 = nn.Flatten(start_dim=-2)
+        self.fc3 = nn.Linear(self.patch_num * patch_len, pred_len * 2)
+        self.gelu4 = nn.GELU()
+        self.fc4 = nn.Linear(pred_len * 2, pred_len)
 
         # Linear Stream
         # MLP
@@ -191,28 +150,14 @@ class Network(nn.Module):
 
         self.fc7 = nn.Linear(pred_len // 2, pred_len)
 
-        # Streams Concatination (now with 3 streams: s, t, and inter-channel transformer)
-        self.pre_fuse_dropout = nn.Dropout(0.2)
-        self.pre_fuse_norm = nn.LayerNorm(pred_len * 3)
-        self.fc8 = nn.Linear(pred_len * 3, pred_len)
+        # Inter-channel stream (linear mixing)
+        self.ic_linear = InterChannelLinear(seq_len=seq_len, pred_len=pred_len, c_in=c_in, rank=8, dropout=0.1)
+        
+        # Direct linear stream (RLinear-inspired)
+        self.direct_linear = DirectLinearStream(seq_len=seq_len, pred_len=pred_len, dropout=0.1)
 
-        # New: Inter-channel gate (does not mix values; scales per channel using cross-channel context)
-        self.ch_gate = ChannelSEGate(c_in, hidden_ratio=4)
-
-        # New: Multi-scale temporal preprocessing (inner- & inter-scale learning)
-        self.ms_season = MultiScaleDWConv(c_in, dilations=(1, 2, 4, 8, 16), kernel_size=3,
-                                          attn_tau=1.5, res_alpha=1.0, mix_beta=1.0,
-                                          norm_type='bn', dropout=0.1)
-        self.ms_trend = MultiScaleDWConv(c_in, dilations=(1, 2, 4, 8, 16, 24), kernel_size=5,
-                                         attn_tau=1.7, res_alpha=1.0, mix_beta=0.8,
-                                         norm_type='bn', dropout=0.1)
-        # Optional: temporal pyramid smoothing residual for trend
-        self.tpp_trend = TemporalPyramidPooling(c_in, windows=(5, 11, 21), gamma=0.4)
-
-    # New: Inter-channel linear stream (no attention)
-        self.ictr = InterChannelLinear(seq_len=seq_len, pred_len=pred_len, c_in=c_in, rank=min(8, c_in), dropout=0.1)
-        self.ic_dropout = nn.Dropout(0.2)
-        self.ic_gate = nn.Parameter(torch.tensor(0.0))  # sigmoid(0)=0.5 initial contribution
+        # Streams Concatenation (4 streams: s, t, inter-channel, direct)
+        self.fc8 = nn.Linear(pred_len * 4, pred_len)
 
     def forward(self, s, t):
         # x: [Batch, Input, Channel]
@@ -222,20 +167,16 @@ class Network(nn.Module):
         s = s.permute(0,2,1) # to [Batch, Channel, Input]
         t = t.permute(0,2,1) # to [Batch, Channel, Input]
 
-        # Inter-channel gating (uses cross-channel info, preserves per-channel independence via scaling)
-        gate = self.ch_gate(s)  # [B, C, 1]
-        s = s * gate
-        t = t * gate
-
-        # Multi-scale temporal processing (inner- & inter-scale)
+        # Multiscale temporal processing (before channel split)
         s = self.ms_season(s)  # [B, C, I]
         t = self.ms_trend(t)   # [B, C, I]
-        t = self.tpp_trend(t)  # residual pyramid smoothing for trend
 
-        # Inter-channel transformer stream (uses combined features)
+        # Inter-channel stream (uses combined features)
         u = 0.5 * (s + t)
-        x_ic = self.ictr(u)     # [B, C, pred_len]
-        x_ic = self.ic_dropout(x_ic) * torch.sigmoid(self.ic_gate)
+        x_ic = self.ic_linear(u)  # [B, C, pred_len]
+        
+        # Direct linear stream (RLinear-style on combined input)
+        x_direct = self.direct_linear(u)  # [B, C, pred_len]
         
         # Channel split for channel independence
         B = s.shape[0] # Batch size
@@ -244,10 +185,39 @@ class Network(nn.Module):
         s = torch.reshape(s, (B*C, I)) # [Batch and Channel, Input]
         t = torch.reshape(t, (B*C, I)) # [Batch and Channel, Input]
 
-        # Non-linear Stream via ConvBackbone
-        s = torch.reshape(s, (B, C, I))
-        s = self.conv_backbone(s)              # [B, C, pred_len]
-        s = torch.reshape(s, (B * C, self.pred_len))
+        # Non-linear Stream
+        # Patching
+        if self.padding_patch == 'end':
+            s = self.padding_patch_layer(s)
+        s = s.unfold(dimension=-1, size=self.patch_len, step=self.stride)
+        # s: [Batch and Channel, Patch_num, Patch_len]
+        
+        # Patch Embedding
+        s = self.fc1(s)
+        s = self.gelu1(s)
+        s = self.bn1(s)
+
+        res = s
+
+        # CNN Depthwise
+        s = self.conv1(s)
+        s = self.gelu2(s)
+        s = self.bn2(s)
+
+        # Residual Stream
+        res = self.fc2(res)
+        s = s + res
+
+        # CNN Pointwise
+        s = self.conv2(s)
+        s = self.gelu3(s)
+        s = self.bn3(s)
+
+        # Flatten Head
+        s = self.flatten1(s)
+        s = self.fc3(s)
+        s = self.gelu4(s)
+        s = self.fc4(s)
 
         # Linear Stream
         # MLP
@@ -261,11 +231,10 @@ class Network(nn.Module):
 
         t = self.fc7(t)
 
-        # Streams Concatination
+        # Streams Concatenation (4 streams)
         x_ic_flat = torch.reshape(x_ic, (B * C, self.pred_len))
-        x = torch.cat((s, t, x_ic_flat), dim=1)
-        x = self.pre_fuse_dropout(x)
-        x = self.pre_fuse_norm(x)
+        x_direct_flat = torch.reshape(x_direct, (B * C, self.pred_len))
+        x = torch.cat((s, t, x_ic_flat, x_direct_flat), dim=1)
         x = self.fc8(x)
 
         # Channel concatination
