@@ -52,33 +52,56 @@ class MultiScaleDWConv(nn.Module):
 
 
 class DirectLinearStream(nn.Module):
-    """Direct linear mapping inspired by RLinear - simple but effective."""
+    """Enhanced direct linear mapping with better convergence."""
     def __init__(self, seq_len: int, pred_len: int, dropout: float = 0.1):
         super().__init__()
-        self.linear1 = nn.Linear(seq_len, seq_len)
+        # Add residual shortcut for better gradient flow
+        self.shortcut = nn.Linear(seq_len, pred_len) if seq_len != pred_len else nn.Identity()
+        
+        self.linear1 = nn.Linear(seq_len, max(seq_len, pred_len))
         self.gelu = nn.GELU()
-        self.linear2 = nn.Linear(seq_len, pred_len)
+        self.linear2 = nn.Linear(max(seq_len, pred_len), pred_len)
         self.dropout = nn.Dropout(dropout)
+        self.layer_norm = nn.LayerNorm(pred_len)
+        
+        # Better initialization for faster convergence
+        nn.init.xavier_uniform_(self.linear1.weight, gain=1.0)
+        nn.init.xavier_uniform_(self.linear2.weight, gain=0.5)
     
     def forward(self, x_bci: torch.Tensor) -> torch.Tensor:
-        # x_bci: [B, C, T] -> permute to [B, C, T] for per-channel processing
+        # x_bci: [B, C, T]
+        shortcut = self.shortcut(x_bci) if hasattr(self.shortcut, 'weight') else x_bci
+        
         x = self.linear1(x_bci)
         x = self.gelu(x)
         x = self.dropout(x)
         x = self.linear2(x)  # [B, C, pred_len]
+        
+        # Residual connection + layer norm for stability
+        x = self.layer_norm(x + shortcut)
         return x
 
 
 class InterChannelLinear(nn.Module):
-    """Pure linear inter-channel mixer with low-rank factorization."""
+    """Enhanced inter-channel mixer with adaptive learning rate and better initialization."""
     def __init__(self, seq_len: int, pred_len: int, c_in: int, rank: int = None, dropout: float = 0.1):
         super().__init__()
         self.time_proj = nn.Linear(seq_len, pred_len)
-        r = min(8, c_in) if rank is None else min(rank, c_in)
-        # Low-rank channel mixing
+        r = min(16, c_in) if rank is None else min(rank, c_in)  # Increased rank for better capacity
+        
+        # Enhanced low-rank channel mixing with skip connection
         self.W1 = nn.Linear(c_in, r, bias=False)
         self.W2 = nn.Linear(r, c_in, bias=False)
         self.drop = nn.Dropout(dropout)
+        self.layer_norm = nn.LayerNorm(c_in)
+        
+        # Learnable residual weight for adaptive mixing
+        self.alpha = nn.Parameter(torch.tensor(0.1))  # Start small, let it learn
+        
+        # Better initialization
+        nn.init.xavier_uniform_(self.time_proj.weight, gain=1.0)
+        nn.init.orthogonal_(self.W1.weight)
+        nn.init.orthogonal_(self.W2.weight)
         
     def forward(self, x_bct: torch.Tensor) -> torch.Tensor:
         # x_bct: [B, C, T]
@@ -86,7 +109,9 @@ class InterChannelLinear(nn.Module):
         # Channel mixing per time step
         y_perm = y.transpose(1, 2)  # [B, pred_len, C]
         y_mix = self.W2(self.drop(self.W1(y_perm)))
-        y_out = (y_perm + y_mix).transpose(1, 2)  # residual + back to [B, C, pred_len]
+        
+        # Adaptive residual with learnable weight
+        y_out = self.layer_norm(y_perm + self.alpha * y_mix).transpose(1, 2)
         return y_out
 
 
@@ -150,14 +175,19 @@ class Network(nn.Module):
 
         self.fc7 = nn.Linear(pred_len // 2, pred_len)
 
-        # Inter-channel stream (linear mixing)
-        self.ic_linear = InterChannelLinear(seq_len=seq_len, pred_len=pred_len, c_in=c_in, rank=8, dropout=0.1)
+        # Inter-channel stream (linear mixing) - enhanced with better rank
+        self.ic_linear = InterChannelLinear(seq_len=seq_len, pred_len=pred_len, c_in=c_in, rank=16, dropout=0.1)
         
-        # Direct linear stream (RLinear-inspired)
+        # Direct linear stream (enhanced RLinear-inspired)
         self.direct_linear = DirectLinearStream(seq_len=seq_len, pred_len=pred_len, dropout=0.1)
 
-        # Streams Concatenation (4 streams: s, t, inter-channel, direct)
+        # Enhanced fusion with learnable stream weights
+        self.stream_weights = nn.Parameter(torch.ones(4) / 4)  # 4 streams
+        self.fusion_norm = nn.LayerNorm(pred_len * 4)
         self.fc8 = nn.Linear(pred_len * 4, pred_len)
+        
+        # Better initialization for final layer
+        nn.init.xavier_uniform_(self.fc8.weight, gain=0.1)  # Small gain for stability
 
     def forward(self, s, t):
         # x: [Batch, Input, Channel]
@@ -231,10 +261,19 @@ class Network(nn.Module):
 
         t = self.fc7(t)
 
-        # Streams Concatenation (4 streams)
+        # Streams Concatenation with learnable weights and normalization
         x_ic_flat = torch.reshape(x_ic, (B * C, self.pred_len))
         x_direct_flat = torch.reshape(x_direct, (B * C, self.pred_len))
-        x = torch.cat((s, t, x_ic_flat, x_direct_flat), dim=1)
+        
+        # Apply learnable stream weights for adaptive fusion
+        weights = F.softmax(self.stream_weights, dim=0)
+        s_weighted = weights[0] * s
+        t_weighted = weights[1] * t
+        ic_weighted = weights[2] * x_ic_flat
+        direct_weighted = weights[3] * x_direct_flat
+        
+        x = torch.cat((s_weighted, t_weighted, ic_weighted, direct_weighted), dim=1)
+        x = self.fusion_norm(x)  # Normalize before final layer
         x = self.fc8(x)
 
         # Channel concatination
