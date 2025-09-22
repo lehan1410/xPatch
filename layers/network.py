@@ -138,27 +138,30 @@ class TemporalPyramidPooling(nn.Module):
         return x_bct + self.gamma * y_avg
 
 
-class InterChannelTransformer(nn.Module):
-    """Lightweight transformer over channel tokens (inverted view).
+class InterChannelLinear(nn.Module):
+    """Pure linear inter-channel mixer with shared time projection and low-rank channel mixing.
 
-    Embeds time series per channel with Linear(T->d), runs TransformerEncoder over C tokens,
-    and projects back to pred_len per channel.
+    Steps:
+    1) Shared time projection Linear(T->pred_len) applied per channel
+    2) Optional low-rank linear mixing across channels at each time step (no attention)
     """
-    def __init__(self, seq_len: int, pred_len: int, c_in: int, d_model: int = 64, n_heads: int = 4, n_layers: int = 1, dropout: float = 0.2):
+    def __init__(self, seq_len: int, pred_len: int, c_in: int, rank: int | None = None, dropout: float = 0.1):
         super().__init__()
-        self.embed = nn.Linear(seq_len, d_model)
-        encoder_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=n_heads, dim_feedforward=d_model*4, dropout=dropout, batch_first=False, activation='gelu')
-        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=n_layers, norm=nn.LayerNorm(d_model))
-        self.projector = nn.Linear(d_model, pred_len)
+        self.time_proj = nn.Linear(seq_len, pred_len)  # shared across channels
+        r = min(8, c_in) if rank is None else min(rank, c_in)
+        # Low-rank channel mixing: C -> r -> C (applied per output step)
+        self.W1 = nn.Linear(c_in, r, bias=False)
+        self.W2 = nn.Linear(r, c_in, bias=False)
+        self.drop = nn.Dropout(dropout)
 
     def forward(self, x_bct: torch.Tensor) -> torch.Tensor:
         # x_bct: [B, C, T]
-        z = self.embed(x_bct)              # [B, C, d]
-        z = z.transpose(0, 1)              # [C, B, d] for TransformerEncoder (S=C)
-        z = self.encoder(z)                # [C, B, d]
-        z = z.transpose(0, 1)              # [B, C, d]
-        y = self.projector(z)              # [B, C, pred_len]
-        return y
+        y = self.time_proj(x_bct)              # [B, C, pred_len]
+        # channel mixing per time step (operate on channel dim)
+        y_perm = y.transpose(1, 2)             # [B, pred_len, C]
+        y_mix = self.W2(self.drop(self.W1(y_perm)))  # [B, pred_len, C]
+        y_out = (y_perm + y_mix).transpose(1, 2)     # residual, back to [B, C, pred_len]
+        return y_out
 
 class Network(nn.Module):
     def __init__(self, seq_len, pred_len, patch_len, stride, padding_patch, c_in: int):
@@ -206,8 +209,8 @@ class Network(nn.Module):
         # Optional: temporal pyramid smoothing residual for trend
         self.tpp_trend = TemporalPyramidPooling(c_in, windows=(5, 11, 21), gamma=0.4)
 
-        # New: Inter-channel transformer stream (inverted transformer)
-        self.ictr = InterChannelTransformer(seq_len=seq_len, pred_len=pred_len, c_in=c_in, d_model=64, n_heads=4, n_layers=1, dropout=0.2)
+    # New: Inter-channel linear stream (no attention)
+        self.ictr = InterChannelLinear(seq_len=seq_len, pred_len=pred_len, c_in=c_in, rank=min(8, c_in), dropout=0.1)
         self.ic_dropout = nn.Dropout(0.2)
         self.ic_gate = nn.Parameter(torch.tensor(0.0))  # sigmoid(0)=0.5 initial contribution
 
