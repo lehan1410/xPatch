@@ -143,7 +143,7 @@ class InterChannelTransformer(nn.Module):
     Embeds time series per channel with Linear(T->d), runs TransformerEncoder over C tokens,
     and projects back to pred_len per channel.
     """
-    def __init__(self, seq_len: int, pred_len: int, c_in: int, d_model: int = 128, n_heads: int = 4, n_layers: int = 1, dropout: float = 0.1):
+    def __init__(self, seq_len: int, pred_len: int, c_in: int, d_model: int = 64, n_heads: int = 4, n_layers: int = 1, dropout: float = 0.2):
         super().__init__()
         self.embed = nn.Linear(seq_len, d_model)
         encoder_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=n_heads, dim_feedforward=d_model*4, dropout=dropout, batch_first=False, activation='gelu')
@@ -217,6 +217,8 @@ class Network(nn.Module):
         self.fc7 = nn.Linear(pred_len // 2, pred_len)
 
         # Streams Concatination (now with 3 streams: s, t, and inter-channel transformer)
+        self.pre_fuse_dropout = nn.Dropout(0.2)
+        self.pre_fuse_norm = nn.LayerNorm(pred_len * 3)
         self.fc8 = nn.Linear(pred_len * 3, pred_len)
 
         # New: Inter-channel gate (does not mix values; scales per channel using cross-channel context)
@@ -233,7 +235,9 @@ class Network(nn.Module):
         self.tpp_trend = TemporalPyramidPooling(c_in, windows=(5, 11, 21), gamma=0.4)
 
         # New: Inter-channel transformer stream (inverted transformer)
-        self.ictr = InterChannelTransformer(seq_len=seq_len, pred_len=pred_len, c_in=c_in, d_model=128, n_heads=4, n_layers=1, dropout=0.1)
+        self.ictr = InterChannelTransformer(seq_len=seq_len, pred_len=pred_len, c_in=c_in, d_model=64, n_heads=4, n_layers=1, dropout=0.2)
+        self.ic_dropout = nn.Dropout(0.2)
+        self.ic_gate = nn.Parameter(torch.tensor(0.0))  # sigmoid(0)=0.5 initial contribution
 
     def forward(self, s, t):
         # x: [Batch, Input, Channel]
@@ -256,6 +260,7 @@ class Network(nn.Module):
         # Inter-channel transformer stream (uses combined features)
         u = 0.5 * (s + t)
         x_ic = self.ictr(u)     # [B, C, pred_len]
+        x_ic = self.ic_dropout(x_ic) * torch.sigmoid(self.ic_gate)
         
         # Channel split for channel independence
         B = s.shape[0] # Batch size
@@ -313,6 +318,8 @@ class Network(nn.Module):
         # Streams Concatination
         x_ic_flat = torch.reshape(x_ic, (B * C, self.pred_len))
         x = torch.cat((s, t, x_ic_flat), dim=1)
+        x = self.pre_fuse_dropout(x)
+        x = self.pre_fuse_norm(x)
         x = self.fc8(x)
 
         # Channel concatination
