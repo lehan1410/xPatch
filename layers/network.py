@@ -136,6 +136,29 @@ class TemporalPyramidPooling(nn.Module):
         y_avg = y_sum / len(self.kernels)
         return x_bct + self.gamma * y_avg
 
+
+class InterChannelTransformer(nn.Module):
+    """Lightweight transformer over channel tokens (inverted view).
+
+    Embeds time series per channel with Linear(T->d), runs TransformerEncoder over C tokens,
+    and projects back to pred_len per channel.
+    """
+    def __init__(self, seq_len: int, pred_len: int, c_in: int, d_model: int = 128, n_heads: int = 4, n_layers: int = 1, dropout: float = 0.1):
+        super().__init__()
+        self.embed = nn.Linear(seq_len, d_model)
+        encoder_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=n_heads, dim_feedforward=d_model*4, dropout=dropout, batch_first=False, activation='gelu')
+        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=n_layers, norm=nn.LayerNorm(d_model))
+        self.projector = nn.Linear(d_model, pred_len)
+
+    def forward(self, x_bct: torch.Tensor) -> torch.Tensor:
+        # x_bct: [B, C, T]
+        z = self.embed(x_bct)              # [B, C, d]
+        z = z.transpose(0, 1)              # [C, B, d] for TransformerEncoder (S=C)
+        z = self.encoder(z)                # [C, B, d]
+        z = z.transpose(0, 1)              # [B, C, d]
+        y = self.projector(z)              # [B, C, pred_len]
+        return y
+
 class Network(nn.Module):
     def __init__(self, seq_len, pred_len, patch_len, stride, padding_patch, c_in: int):
         super(Network, self).__init__()
@@ -193,8 +216,8 @@ class Network(nn.Module):
 
         self.fc7 = nn.Linear(pred_len // 2, pred_len)
 
-        # Streams Concatination
-        self.fc8 = nn.Linear(pred_len * 2, pred_len)
+        # Streams Concatination (now with 3 streams: s, t, and inter-channel transformer)
+        self.fc8 = nn.Linear(pred_len * 3, pred_len)
 
         # New: Inter-channel gate (does not mix values; scales per channel using cross-channel context)
         self.ch_gate = ChannelSEGate(c_in, hidden_ratio=4)
@@ -208,6 +231,9 @@ class Network(nn.Module):
                                          norm_type='bn', dropout=0.1)
         # Optional: temporal pyramid smoothing residual for trend
         self.tpp_trend = TemporalPyramidPooling(c_in, windows=(5, 11, 21), gamma=0.4)
+
+        # New: Inter-channel transformer stream (inverted transformer)
+        self.ictr = InterChannelTransformer(seq_len=seq_len, pred_len=pred_len, c_in=c_in, d_model=128, n_heads=4, n_layers=1, dropout=0.1)
 
     def forward(self, s, t):
         # x: [Batch, Input, Channel]
@@ -226,6 +252,10 @@ class Network(nn.Module):
         s = self.ms_season(s)  # [B, C, I]
         t = self.ms_trend(t)   # [B, C, I]
         t = self.tpp_trend(t)  # residual pyramid smoothing for trend
+
+        # Inter-channel transformer stream (uses combined features)
+        u = 0.5 * (s + t)
+        x_ic = self.ictr(u)     # [B, C, pred_len]
         
         # Channel split for channel independence
         B = s.shape[0] # Batch size
@@ -281,7 +311,8 @@ class Network(nn.Module):
         t = self.fc7(t)
 
         # Streams Concatination
-        x = torch.cat((s, t), dim=1)
+        x_ic_flat = torch.reshape(x_ic, (B * C, self.pred_len))
+        x = torch.cat((s, t, x_ic_flat), dim=1)
         x = self.fc8(x)
 
         # Channel concatination

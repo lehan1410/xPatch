@@ -22,8 +22,8 @@ class Model(nn.Module):
         stride = configs.stride
         padding_patch = configs.padding_patch
 
-        # Normalization
-        self.revin = configs.revin
+        # Normalization (enable RevIN by default; can be disabled via configs.revin=False)
+        self.revin = getattr(configs, 'revin', True)
         self.revin_layer = RevIN(c_in,affine=True,subtract_last=False)
 
         # Moving Average
