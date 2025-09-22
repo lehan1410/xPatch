@@ -176,17 +176,17 @@ class Network(nn.Module):
                                           patch_len=patch_len, stride=stride, padding_patch=padding_patch,
                                           n_layers=4, d_model=64, d_ff=256, dropout=0.1, head_dropout=0.1)
 
-    # Linear Stream
-    # MLP
-    self.fc5 = nn.Linear(seq_len, pred_len * 4)
-    self.avgpool1 = nn.AvgPool1d(kernel_size=2)
-    self.ln1 = nn.LayerNorm(pred_len * 2)
+        # Linear Stream
+        # MLP
+        self.fc5 = nn.Linear(seq_len, pred_len * 4)
+        self.avgpool1 = nn.AvgPool1d(kernel_size=2)
+        self.ln1 = nn.LayerNorm(pred_len * 2)
 
-    self.fc6 = nn.Linear(pred_len * 2, pred_len)
-    self.avgpool2 = nn.AvgPool1d(kernel_size=2)
-    self.ln2 = nn.LayerNorm(pred_len // 2)
+        self.fc6 = nn.Linear(pred_len * 2, pred_len)
+        self.avgpool2 = nn.AvgPool1d(kernel_size=2)
+        self.ln2 = nn.LayerNorm(pred_len // 2)
 
-    self.fc7 = nn.Linear(pred_len // 2, pred_len)
+        self.fc7 = nn.Linear(pred_len // 2, pred_len)
 
         # Streams Concatination (now with 3 streams: s, t, and inter-channel transformer)
         self.pre_fuse_dropout = nn.Dropout(0.2)
