@@ -1,6 +1,7 @@
 import torch
 from torch import nn
 import torch.nn.functional as F
+from .conv_backbone import ConvBackbone
 
 
 class GEGLULinear(nn.Module):
@@ -167,54 +168,25 @@ class Network(nn.Module):
         self.pred_len = pred_len
         self.c_in = c_in
 
-        # Non-linear Stream
-        # Patching
+        # Non-linear Stream (replaced by ConvBackbone)
         self.patch_len = patch_len
         self.stride = stride
         self.padding_patch = padding_patch
-        self.dim = patch_len * patch_len
-        self.patch_num = (seq_len - patch_len)//stride + 1
-        if padding_patch == 'end': # can be modified to general case
-            self.padding_patch_layer = nn.ReplicationPad1d((0, stride)) 
-            self.patch_num += 1
+        self.conv_backbone = ConvBackbone(c_in=c_in, seq_len=seq_len, pred_len=pred_len,
+                                          patch_len=patch_len, stride=stride, padding_patch=padding_patch,
+                                          n_layers=4, d_model=64, d_ff=256, dropout=0.1, head_dropout=0.1)
 
-        # Patch Embedding
-        self.fc1 = nn.Linear(patch_len, self.dim)
-        self.gelu1 = nn.GELU()
-        self.bn1 = nn.BatchNorm1d(self.patch_num)
-        
-        # CNN Depthwise
-        self.conv1 = nn.Conv1d(self.patch_num, self.patch_num,
-                               patch_len, patch_len, groups=self.patch_num)
-        self.gelu2 = nn.GELU()
-        self.bn2 = nn.BatchNorm1d(self.patch_num)
+    # Linear Stream
+    # MLP
+    self.fc5 = nn.Linear(seq_len, pred_len * 4)
+    self.avgpool1 = nn.AvgPool1d(kernel_size=2)
+    self.ln1 = nn.LayerNorm(pred_len * 2)
 
-        # Residual Stream
-        self.fc2 = nn.Linear(self.dim, patch_len)
+    self.fc6 = nn.Linear(pred_len * 2, pred_len)
+    self.avgpool2 = nn.AvgPool1d(kernel_size=2)
+    self.ln2 = nn.LayerNorm(pred_len // 2)
 
-        # CNN Pointwise
-        self.conv2 = nn.Conv1d(self.patch_num, self.patch_num, 1, 1)
-        self.gelu3 = nn.GELU()
-        self.bn3 = nn.BatchNorm1d(self.patch_num)
-
-        # Flatten Head
-        self.flatten1 = nn.Flatten(start_dim=-2)
-        self.fc3 = nn.Linear(self.patch_num * patch_len, pred_len * 2)
-        # improved linear head with GEGLU
-        self.head_geglu = GEGLULinear(pred_len * 2, pred_len * 2)
-        self.fc4 = nn.Linear(pred_len * 2, pred_len)
-
-        # Linear Stream
-        # MLP
-        self.fc5 = nn.Linear(seq_len, pred_len * 4)
-        self.avgpool1 = nn.AvgPool1d(kernel_size=2)
-        self.ln1 = nn.LayerNorm(pred_len * 2)
-
-        self.fc6 = nn.Linear(pred_len * 2, pred_len)
-        self.avgpool2 = nn.AvgPool1d(kernel_size=2)
-        self.ln2 = nn.LayerNorm(pred_len // 2)
-
-        self.fc7 = nn.Linear(pred_len // 2, pred_len)
+    self.fc7 = nn.Linear(pred_len // 2, pred_len)
 
         # Streams Concatination (now with 3 streams: s, t, and inter-channel transformer)
         self.pre_fuse_dropout = nn.Dropout(0.2)
@@ -269,39 +241,10 @@ class Network(nn.Module):
         s = torch.reshape(s, (B*C, I)) # [Batch and Channel, Input]
         t = torch.reshape(t, (B*C, I)) # [Batch and Channel, Input]
 
-        # Non-linear Stream
-        # Patching
-        if self.padding_patch == 'end':
-            s = self.padding_patch_layer(s)
-        s = s.unfold(dimension=-1, size=self.patch_len, step=self.stride)
-        # s: [Batch and Channel, Patch_num, Patch_len]
-        
-        # Patch Embedding
-        s = self.fc1(s)
-        s = self.gelu1(s)
-        s = self.bn1(s)
-
-        res = s
-
-        # CNN Depthwise
-        s = self.conv1(s)
-        s = self.gelu2(s)
-        s = self.bn2(s)
-
-        # Residual Stream
-        res = self.fc2(res)
-        s = s + res
-
-        # CNN Pointwise
-        s = self.conv2(s)
-        s = self.gelu3(s)
-        s = self.bn3(s)
-
-        # Flatten Head
-        s = self.flatten1(s)
-        s = self.fc3(s)
-        s = self.head_geglu(s)
-        s = self.fc4(s)
+        # Non-linear Stream via ConvBackbone
+        s = torch.reshape(s, (B, C, I))
+        s = self.conv_backbone(s)              # [B, C, pred_len]
+        s = torch.reshape(s, (B * C, self.pred_len))
 
         # Linear Stream
         # MLP
