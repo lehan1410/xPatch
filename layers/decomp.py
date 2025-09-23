@@ -67,6 +67,7 @@ class DECOMP(nn.Module):
     """
     def __init__(self, ma_type, alpha, beta, learn_kernels=(101,31,7)):
         super(DECOMP, self).__init__()
+        self.ma_type = ma_type
         if ma_type == 'ema':
             self.ma = EMA(alpha)
         elif ma_type == 'dema':
