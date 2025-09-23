@@ -50,6 +50,20 @@ class DilatedDepthwiseBlock(nn.Module):
         out = x
         for layer in self.layers:
             out = layer(out)
+
+        # ensure out length matches input by center-cropping or padding if needed
+        in_len = x.size(2)
+        out_len = out.size(2)
+        if out_len != in_len:
+            if out_len > in_len:
+                start = (out_len - in_len) // 2
+                out = out[:, :, start:start + in_len]
+            else:
+                pad_total = in_len - out_len
+                pad_left = pad_total // 2
+                pad_right = pad_total - pad_left
+                out = F.pad(out, (pad_left, pad_right))  # pad along time dim
+
         # compute per-channel gate from global context
         ctx = out.mean(dim=2)                 # [B, C]
         g = torch.sigmoid(self.gate_fc(ctx)).unsqueeze(-1)  # [B, C, 1]
