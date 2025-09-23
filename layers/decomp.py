@@ -65,7 +65,7 @@ class DECOMP(nn.Module):
     """
     Series decomposition block
     """
-    def __init__(self, ma_type, alpha, beta):
+    def __init__(self, ma_type, alpha, beta, learn_kernels=(101,31,7)):
         super(DECOMP, self).__init__()
         if ma_type == 'ema':
             self.ma = EMA(alpha)
