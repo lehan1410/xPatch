@@ -54,7 +54,7 @@ class DilatedDepthwiseBlock(nn.Module):
         ctx = out.mean(dim=2)                 # [B, C]
         g = torch.sigmoid(self.gate_fc(ctx)).unsqueeze(-1)  # [B, C, 1]
         # gated residual: mix transformed and input
-        return g * out  (1.0 - g) * x
+        return g * out + (1.0 - g) * x
 
 class PointwiseGLU(nn.Module):
     """1x1 pointwise with GLU activation for stronger gating nonlinearity."""
