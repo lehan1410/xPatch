@@ -77,6 +77,7 @@ class EnhancedModel(nn.Module):
                 mb_k_small=mb_k_small, mb_k_large=mb_k_large, emd_imfs=emd_imfs
             )
 
+
         # Cross-channel processing for inter-variable dependencies
         if c_in > 1:
             self.cbam = CBAM(c_in, reduction=max(c_in // 16, 1))
