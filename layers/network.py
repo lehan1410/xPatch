@@ -116,7 +116,7 @@ class Network(nn.Module):
         self.dilated_block = DilatedDepthwiseBlock(self.patch_num, kernel_size=patch_len, layers=3, activation='silu')
 
         # Residual Stream
-        self.fc2 = nn.Linear(self.dim, patch_len)
+        self.fc2 = nn.Linear(self.dim, self.dim)
 
         # CNN Pointwise
         # self.conv2 = nn.Conv1d(self.patch_num, self.patch_num, 1, 1)
@@ -127,7 +127,7 @@ class Network(nn.Module):
 
         # Flatten Head
         self.flatten1 = nn.Flatten(start_dim=-2)
-        self.fc3 = nn.Linear(self.patch_num * patch_len, pred_len * 2)
+        self.fc3 = nn.Linear(self.patch_num * self.dim, pred_len * 2)
         self.gelu4 = nn.GELU()
         self.fc4 = nn.Linear(pred_len * 2, pred_len)
 
