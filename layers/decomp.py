@@ -3,6 +3,7 @@ from torch import nn
 
 from layers.ema import EMA
 from layers.dema import DEMA
+import torch.nn.functional as F
 
 class MultiScaleDecompose(nn.Module):
     """
