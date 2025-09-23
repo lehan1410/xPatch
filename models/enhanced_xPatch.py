@@ -77,6 +77,25 @@ class EnhancedModel(nn.Module):
                 mb_k_small=mb_k_small, mb_k_large=mb_k_large, emd_imfs=emd_imfs
             )
 
+        # Enhanced network architecture
+        self.use_enhanced_network = getattr(configs, 'use_enhanced_network', True)
+        if self.use_enhanced_network:
+            if c_in > 32:  # Use transformer for high-dimensional data
+                self.net = EnhancedTransformerNetwork(
+                    seq_len, pred_len, patch_len, stride, padding_patch, 
+                    d_model, nhead, num_layers, dropout, c_in
+                )
+            else:  # Use enhanced CNN-based network for lower dimensions
+                self.net = EnhancedNetwork(
+                    seq_len, pred_len, patch_len, stride, padding_patch, c_in
+                )
+        else:
+            from layers.transformer import TransformerNetwork
+            self.net = TransformerNetwork(
+                seq_len, pred_len, patch_len, stride, padding_patch, 
+                d_model, nhead, num_layers, dropout
+            )
+
         # Cross-channel processing for inter-variable dependencies
         if c_in > 1:
             self.cbam = CBAM(c_in, reduction=max(c_in // 16, 1))
