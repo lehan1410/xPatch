@@ -26,12 +26,14 @@ class Network(nn.Module):
         self.bn1 = nn.BatchNorm1d(self.patch_num)
 
         # Depthwise conv (local features per patch index) - base
+        # conv1 reduces the temporal length from `dim` -> `patch_len` (stride=patch_len)
         self.conv1 = nn.Conv1d(self.patch_num, self.patch_num,
                                patch_len, patch_len, groups=self.patch_num)
         self.act2 = nn.GELU()
         self.bn2 = nn.BatchNorm1d(self.patch_num)
 
-        # --- Multi-scale / dilated depthwise convolutions (lightweight) ---
+        # --- Multi-scale / dilated depthwise convolutions (operate on conv1 output!) ---
+        # These must run on the reduced length (=patch_len) so shapes match for addition
         self.ms_conv_k3 = nn.Conv1d(self.patch_num, self.patch_num, kernel_size=3, padding=1, groups=self.patch_num)
         self.ms_conv_d2 = nn.Conv1d(self.patch_num, self.patch_num, kernel_size=3, dilation=2, padding=2, groups=self.patch_num)
         self.bn_ms = nn.BatchNorm1d(self.patch_num)
@@ -133,19 +135,19 @@ class Network(nn.Module):
         s_e = self.act1(s_e)
         s_e = self.bn1(s_e)
 
-        # base depthwise conv
-        s_base = self.conv1(s_e)      # [N, patch_num, dim]
+        # base depthwise conv -> reduces temporal length to patch_len
+        s_base = self.conv1(s_e)      # [N, patch_num, patch_len]
         s_base = self.act2(s_base)
         s_base = self.bn2(s_base)
 
-        # multi-scale / dilated depthwise convs (lightweight)
-        s_ms1 = self.ms_conv_k3(s_e)  # local small kernel
-        s_ms2 = self.ms_conv_d2(s_e)  # dilated kernel for longer context
+        # multi-scale / dilated depthwise convs applied on the reduced-length tensor
+        s_ms1 = self.ms_conv_k3(s_base)  # [N, patch_num, patch_len]
+        s_ms2 = self.ms_conv_d2(s_base)  # [N, patch_num, patch_len]
         s_ms = s_base + s_ms1 + s_ms2
         s_ms = self.bn_ms(s_ms)
 
-        # residual projection and add
-        res = self.fc2(s_e)
+        # residual projection (from high-dim embedding down to patch_len) and add
+        res = self.fc2(s_e)             # [N, patch_num, patch_len]
         s_ms = s_ms + res
 
         # pointwise mixing (per-patch mixing)
@@ -153,12 +155,11 @@ class Network(nn.Module):
         s_ms = self.act3(s_ms)
         s_ms = self.bn3(s_ms)
 
-        # cross-channel mixing: move patch-channel to last dim, apply mixer per time-step
-        # current s_ms: [N, patch_num, dim] -> transpose to [N, dim, patch_num]
-        s_mix = s_ms.transpose(1, 2)            # [N, dim, patch_num]
-        # apply same MLP to last dim; nn.Linear supports broadcasting over leading dims
-        s_mix = self.channel_mixer(s_mix)       # [N, dim, patch_num]
-        s_ms = s_mix.transpose(1, 2)            # [N, patch_num, dim]
+        # cross-channel mixing: move last dim to apply channel_mixer over channels
+        # s_ms: [N, patch_num, patch_len] -> transpose to [N, patch_len, patch_num]
+        s_mix = s_ms.transpose(1, 2)            # [N, patch_len, patch_num]
+        s_mix = self.channel_mixer(s_mix)       # [N, patch_len, patch_num]
+        s_ms = s_mix.transpose(1, 2)            # [N, patch_num, patch_len]
 
         # flatten and seasonal complex head
         s_flat = self.flatten1(s_ms)   # [N, patch_num * patch_len]
