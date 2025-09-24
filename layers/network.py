@@ -1,50 +1,52 @@
+import math
 import torch
 import torch.nn.functional as F
 from torch import nn
-import math
 
 class Network(nn.Module):
     def __init__(self, seq_len, pred_len, patch_len, stride, padding_patch, dropout=0.1):
         super(Network, self).__init__()
 
-        # Parameters
+        # params
         self.pred_len = pred_len
         self.seq_len = seq_len
-
-        # Non-linear Stream / patching params
         self.patch_len = patch_len
         self.stride = stride
         self.padding_patch = padding_patch
 
-        # feature dim per patch
+        # feature dim per patch (kept quadratic as original design)
         self.dim = patch_len * patch_len
 
-        # compute expected number of patches
+        # computed patch count (kept fixed from init seq_len)
         self.patch_num = (seq_len - patch_len) // stride + 1
 
-        # Patch Embedding
-        self.fc1 = nn.Linear(patch_len, self.dim)
+        # --- Patch embedding (non-linear stream) ---
+        self.patch_fc = nn.Linear(patch_len, self.dim)
         self.act = nn.SiLU()
-        self.ln_embed = nn.LayerNorm(self.dim)
+        self.ln_patch = nn.LayerNorm(self.dim)
         self.drop = nn.Dropout(dropout)
 
-        # Depthwise (per-feature) conv + pointwise conv
-        # operate on feature dim as channels: Conv1d expects [N, C, L]
-        self.conv1 = nn.Conv1d(self.dim, self.dim, kernel_size=3, padding=1, groups=self.dim)
-        self.conv2 = nn.Conv1d(self.dim, self.dim, kernel_size=1)
+        # Depthwise conv on feature dim (groups=self.dim) + pointwise conv
+        # Conv1d expects [N, C, L] where C = feature dim
+        self.dw_conv = nn.Conv1d(self.dim, self.dim, kernel_size=3, padding=1, groups=self.dim)
+        self.gn_dw = nn.GroupNorm(1, self.dim)
+        self.pw_conv = nn.Conv1d(self.dim, self.dim, kernel_size=1)
+        self.gn_pw = nn.GroupNorm(1, self.dim)
+
+        # small post conv LayerNorm (applied on last dim)
         self.post_ln = nn.LayerNorm(self.dim)
 
-        # Residual projection (keep same dim)
-        self.fc2 = nn.Linear(self.dim, self.dim)
+        # residual projection (same shape so easy add) + small learnable scale
+        self.res_proj = nn.Linear(self.dim, self.dim)
         self.res_scale = nn.Parameter(torch.tensor(0.5))
 
-        # Flatten Head
-        self.flatten1 = nn.Flatten(start_dim=-2)
-        self.fc3 = nn.Linear(self.patch_num * self.dim, pred_len * 2)
-        self.act2 = nn.SiLU()
-        self.fc4 = nn.Linear(pred_len * 2, pred_len)
+        # flatten head to predict pred_len
+        self.flatten = nn.Flatten(start_dim=-2)
+        self.head_fc1 = nn.Linear(self.patch_num * self.dim, pred_len * 2)
+        self.head_act = nn.SiLU()
+        self.head_fc2 = nn.Linear(pred_len * 2, pred_len)
 
-        # Linear Stream: stable MLP with LayerNorm + SiLU + skip
+        # --- Linear stream (stable MLP) ---
         hidden = max(self.seq_len, pred_len * 2)
         self.t_ln = nn.LayerNorm(self.seq_len)
         self.linear_mlp = nn.Sequential(
@@ -56,36 +58,34 @@ class Network(nn.Module):
         )
         self.linear_skip = nn.Linear(self.seq_len, pred_len)
 
-        # Streams Concatenation
-        self.fc8 = nn.Linear(pred_len * 2, pred_len)
+        # combine streams
+        self.combine = nn.Linear(pred_len * 2, pred_len)
 
         # init
         self._reset_parameters()
 
     def _reset_parameters(self):
         for m in self.modules():
-            if isinstance(m, nn.Linear) or isinstance(m, nn.Conv1d):
-                nn.init.kaiming_uniform_(m.weight, a=math.sqrt(5)) if hasattr(nn.init, 'kaiming_uniform_') else None
-                if getattr(m, 'bias', None) is not None:
+            if isinstance(m, (nn.Linear, nn.Conv1d)):
+                nn.init.kaiming_uniform_(m.weight, a=math.sqrt(5))
+                if getattr(m, "bias", None) is not None:
                     nn.init.zeros_(m.bias)
 
     def forward(self, s, t, c=None, r=None):
-        # s,t: [Batch, Input, Channel]
+        # inputs: s,t: [B, Input, Channel]
         if c is not None:
             s = s + c
         if r is not None:
             t = t + r
 
-        # to [Batch, Channel, Input]
+        # to [B, C, I]
         s = s.permute(0, 2, 1)
         t = t.permute(0, 2, 1)
 
-        # merge batch and channel
-        B = s.shape[0]
-        C = s.shape[1]
-        I = s.shape[2]
-        s = torch.reshape(s, (B * C, I))
-        t = torch.reshape(t, (B * C, I))
+        # merge batch and channel for channel-independent processing
+        B, C, I = s.shape
+        s = s.reshape(B * C, I)  # [N, I]
+        t = t.reshape(B * C, I)  # [N, I]
 
         # --- Non-linear stream: patching ---
         if self.padding_patch == 'end':
@@ -98,44 +98,47 @@ class Network(nn.Module):
         if s.shape[1] != self.patch_num:
             raise RuntimeError(f"runtime patch_num {s.shape[1]} != init patch_num {self.patch_num}")
 
-        # Patch embedding
-        s = self.fc1(s)               # [B*C, patch_num, dim]
+        # patch embedding (applies to last dim)
+        s = self.patch_fc(s)             # [N, patch_num, dim]
         s = self.act(s)
-        s = self.ln_embed(s)
+        s = self.ln_patch(s)
         s = self.drop(s)
 
-        res = s                       # residual
+        res = s.clone()
 
-        # conv expects [N, C, L] where C = dim
-        s = s.permute(0, 2, 1).contiguous()  # [B*C, dim, patch_num]
-        s = self.conv1(s)
+        # prepare for conv: [N, dim, patch_num]
+        s = s.permute(0, 2, 1).contiguous()
+        s = self.dw_conv(s)
+        s = self.gn_dw(s)
         s = self.act(s)
-        s = self.conv2(s)
-        s = self.act(s)
-        s = s.permute(0, 2, 1).contiguous()   # [B*C, patch_num, dim]
 
+        s = self.pw_conv(s)
+        s = self.gn_pw(s)
+        s = self.act(s)
+
+        # back to [N, patch_num, dim]
+        s = s.permute(0, 2, 1).contiguous()
         s = self.post_ln(s)
 
-        # residual projection with scale
-        res = self.fc2(res)
+        # residual projection and scaled add
+        res = self.res_proj(res)
         s = s + self.res_scale * res
 
-        # Flatten head
-        s = self.flatten1(s)
-        s = self.fc3(s)
-        s = self.act2(s)
-        s = self.fc4(s)   # [B*C, pred_len]
+        # flatten head -> partial prediction
+        s = self.flatten(s)
+        s = self.head_fc1(s)
+        s = self.head_act(s)
+        s = self.head_fc2(s)  # [N, pred_len]
 
         # --- Linear stream ---
         t_norm = self.t_ln(t)
-        t_out = self.linear_mlp(t_norm) + self.linear_skip(t)
+        t_out = self.linear_mlp(t_norm) + self.linear_skip(t)  # [N, pred_len]
 
         # --- Combine ---
-        x = torch.cat((s, t_out), dim=1)
-        x = self.fc8(x)
+        x = torch.cat((s, t_out), dim=1)  # [N, pred_len*2]
+        x = self.combine(x)               # [N, pred_len]
 
-        # restore shapes
-        x = torch.reshape(x, (B, C, self.pred_len))
-        x = x.permute(0, 2, 1)
+        # restore shapes [B, C, pred_len] -> [B, pred_len, C]
+        x = x.reshape(B, C, self.pred_len).permute(0, 2, 1)
 
         return x
