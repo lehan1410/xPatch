@@ -3,283 +3,184 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-"""
-Multiscale -> node encoder + DTW-based memory read
-
-- MultiScaleNodeEncoder: build multiscale temporal features (dilated convs) and soft-pool into K nodes
-- PatternMemoryDTW: store M prototype node-sequences; compute DTW between query node-sequence and prototypes,
-  convert distances -> soft weights -> read memory values -> fuse + head -> pred_len
-- Network: original patch-based non-linear stream + trend -> multiscale nodes -> DTW-memory read -> combine
-"""
-
-class MultiScaleNodeEncoder(nn.Module):
-    def __init__(self, seq_len, node_dim=64, num_nodes=8, scales=(64, 16, 4), kernel_size=3):
-        """
-        scales: list of receptive-field-like sizes (larger -> long scale)
-        Produces node embeddings per sample: [N, K_total, node_dim]
-        """
-        super(MultiScaleNodeEncoder, self).__init__()
+class TCNEncoder(nn.Module):
+    """
+    Lightweight TCN encoder for linear/trend stream.
+    Input: x [N, L] -> unsqueeze -> [N, 1, L] -> stack of dilated convs -> pooled -> [N, hidden]
+    """
+    def __init__(self, seq_len, hidden=128, kernel_size=3, num_layers=4, dropout=0.1):
+        super(TCNEncoder, self).__init__()
         self.seq_len = seq_len
-        self.node_dim = node_dim
-        self.num_nodes = num_nodes
-        self.scales = scales
-        self.kernel_size = kernel_size
-
-        self.scale_convs = nn.ModuleList()
-        for s in scales:
-            # build small dilated stack to increase receptive field ~ s
-            layers = []
-            rf = 1
-            dilation = 1
-            in_ch = 1
-            # ensure subsequent convs accept node_dim channels
-            while rf < s:
-                layers.append(nn.Conv1d(in_ch, node_dim, kernel_size=kernel_size, padding=dilation, dilation=dilation))
-                layers.append(nn.GELU())
-                # normalize across feature channels (Conv1d output shape [N, node_dim, L])
-                layers.append(nn.BatchNorm1d(node_dim))
-                rf += (kernel_size - 1) * dilation
-                dilation *= 2
-                in_ch = node_dim
-            self.scale_convs.append(nn.Sequential(*layers))
-
-        # pooling score network per scale -> produce num_nodes per scale
-        self.pool_scores = nn.ModuleList([nn.Linear(node_dim, num_nodes) for _ in scales])
-
-    def forward(self, x_flat):
-        # x_flat: [N, L]
-        N, L = x_flat.shape
-        x = x_flat.unsqueeze(1)  # [N,1,L]
-        nodes_per_scale = []
-        for conv, pool in zip(self.scale_convs, self.pool_scores):
-            z = conv(x)                         # [N, node_dim, L]
-            z_t = z.permute(0, 2, 1).contiguous()  # [N, L, node_dim]
-            scores = pool(z_t)                  # [N, L, num_nodes]
-            scores = F.softmax(scores, dim=1)   # soft-pool over time
-            nodes = torch.einsum('nlk,nld->nkd', scores, z_t)  # [N, num_nodes, node_dim]
-            nodes_per_scale.append(nodes)
-        # concat nodes across scales -> [N, K_total, node_dim]
-        nodes = torch.cat(nodes_per_scale, dim=1)
-        return nodes  # [N, K_total, node_dim]
-
-
-def dtw_distance_vectors(query_nodes, proto_nodes):
-    """
-    Compute DTW distance between query node-sequence and proto node-sequence.
-    query_nodes: [N, Kq, D]
-    proto_nodes: [Kp, D] or [N, Kp, D] (if batch-specific prototypes)
-    Returns distances [N]
-    Uses classic DP; Kq and Kp expected small (~4-32).
-    """
-    if proto_nodes.dim() == 2:
-        # expand to batch
-        proto = proto_nodes.unsqueeze(0)  # [1, Kp, D]
-    else:
-        proto = proto_nodes  # [N, Kp, D]
-    N, Kq, D = query_nodes.shape
-    Kp = proto.shape[1]
-
-    # compute cost matrix: [N, Kq, Kp]
-    q = query_nodes.unsqueeze(2)  # [N, Kq,1,D]
-    p = proto.unsqueeze(1)        # [N,1,Kp,D] or [1,1,Kp,D]
-    cost = torch.norm(q - p, dim=-1)  # [N, Kq, Kp]
-
-    # DP matrix init
-    inf = 1e9
-    device = cost.device
-    dp = torch.full((N, Kq + 1, Kp + 1), inf, device=device, dtype=cost.dtype)
-    dp[:, 0, 0] = 0.0
-    # fill
-    for i in range(1, Kq + 1):
-        for j in range(1, Kp + 1):
-            c = cost[:, i - 1, j - 1]
-            prev = torch.min(torch.stack([dp[:, i - 1, j], dp[:, i, j - 1], dp[:, i - 1, j - 1]], dim=-1), dim=-1)[0]
-            dp[:, i, j] = c + prev
-    dist = dp[:, Kq, Kp]  # [N]
-    return dist
-
-
-class PatternMemoryDTW(nn.Module):
-    def __init__(self, num_memory=64, node_dim=64, pred_len=96, prototype_k=16, temp=1.0):
-        super(PatternMemoryDTW, self).__init__()
-        self.num_memory = num_memory
-        self.node_dim = node_dim
-        self.pred_len = pred_len
-        self.prototype_k = prototype_k
-        self.temp = temp
-
-        # prototypes: sequences of prototype nodes: [M, K, D]
-        self.prototypes = nn.Parameter(torch.randn(num_memory, prototype_k, node_dim) * 0.1)
-        # associated memory read vectors (values) mapped to node_dim then to pred_len
-        self.memory_values = nn.Parameter(torch.randn(num_memory, node_dim) * 0.1)
-
-        # small projector from fused read -> final pred
-        self.read_proj = nn.Sequential(
-            nn.Linear(node_dim * 2, node_dim),
+        self.hidden = hidden
+        self.num_layers = num_layers
+        self.convs = nn.ModuleList()
+        in_ch = 1
+        dilation = 1
+        for i in range(num_layers):
+            out_ch = hidden
+            pad = (kernel_size - 1) * dilation // 2
+            self.convs.append(nn.Conv1d(in_ch, out_ch, kernel_size=kernel_size, padding=pad, dilation=dilation))
+            self.convs.append(nn.GroupNorm(1, out_ch))
+            self.convs.append(nn.GELU())
+            self.convs.append(nn.Dropout(dropout))
+            in_ch = out_ch
+            dilation *= 2
+        self.pool = nn.AdaptiveAvgPool1d(1)
+        self.out_proj = nn.Sequential(
+            nn.Linear(hidden, hidden),
             nn.GELU(),
-            nn.Linear(node_dim, pred_len)
+            nn.Dropout(dropout)
         )
+        self._reset_parameters()
 
-    def forward(self, nodes):
-        """
-        nodes: [N, Kq, D] (query node-sequence)
-        returns [N, pred_len]
-        """
-        N, Kq, D = nodes.shape
-        M = self.num_memory
-        # if prototype length differs from Kq, we can either truncate/pad or compute DTW across different lengths
-        # use dtw_distance_vectors which supports different K
-        # compute distances [N, M]
-        dists = []
-        for m in range(M):
-            proto = self.prototypes[m]  # [Kp, D]
-            dist_m = dtw_distance_vectors(nodes, proto)  # [N]
-            dists.append(dist_m)
-        dists = torch.stack(dists, dim=1)  # [N, M]
+    def _reset_parameters(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv1d) or isinstance(m, nn.Linear):
+                try:
+                    nn.init.kaiming_uniform_(m.weight, a=math.sqrt(5))
+                except Exception:
+                    pass
+                if getattr(m, "bias", None) is not None:
+                    nn.init.zeros_(m.bias)
 
-        # similarity weights
-        sims = -dists / max(1e-6, self.temp)
-        weights = F.softmax(sims, dim=1)  # [N, M]
-
-        # read memory values -> [N, D]
-        mem_vals = self.memory_values.unsqueeze(0).expand(N, -1, -1)  # [N, M, D]
-        read = torch.einsum('nm,nmd->nd', weights, mem_vals)  # [N, D]
-
-        # fuse read with simple summary of nodes (mean)
-        summary = nodes.mean(dim=1)  # [N, D]
-        fused = torch.cat([summary, read], dim=1)  # [N, 2D]
-        out = self.read_proj(fused)  # [N, pred_len]
-        return out, dists  # return distances for diagnostics optionally
+    def forward(self, x):
+        # x: [N, L]
+        x = x.unsqueeze(1)            # [N,1,L]
+        for layer in self.convs:
+            x = layer(x)
+        x = self.pool(x).squeeze(-1)  # [N, hidden]
+        x = self.out_proj(x)          # [N, hidden]
+        return x
 
 
 class Network(nn.Module):
     def __init__(self, seq_len, pred_len, patch_len, stride, padding_patch,
-                 node_dim=64, nodes_per_scale=4, scales=(64,16,4),
-                 mem_size=64, mem_prototype_k=8):
+                 nl_dim=None, tcn_hidden=None, tcn_layers=4, dropout=0.1):
         super(Network, self).__init__()
 
         # Parameters
         self.pred_len = pred_len
-
-        # Non-linear Stream
-        # Patching
+        self.seq_len = seq_len
         self.patch_len = patch_len
         self.stride = stride
         self.padding_patch = padding_patch
-        self.dim = patch_len * patch_len
-        self.patch_num = (seq_len - patch_len)//stride + 1
-        if padding_patch == 'end': # can be modified to general case
-            self.padding_patch_layer = nn.ReplicationPad1d((0, stride))
-            self.patch_num += 1
 
-        # Patch Embedding
+        # Non-linear stream params
+        self.dim = (nl_dim or max(64, patch_len * 2))
+        self.patch_num = (seq_len - patch_len) // stride + 1
+        if padding_patch == 'end':
+            # pad in forward so keep patch_num as init computed
+            pass
+
+        # --- Non-linear (patch) stream ---
+        # Patch embedding: map patch_len -> dim
         self.fc1 = nn.Linear(patch_len, self.dim)
-        self.gelu1 = nn.GELU()
-        # use LayerNorm on feature dim (after embedding)
-        self.ln1 = nn.LayerNorm(self.dim)
-
-        # CNN Depthwise (operate on feature dim after permute in forward)
-        self.conv_dw = nn.Conv1d(self.dim, self.dim, kernel_size=3, padding=1, groups=self.dim)
-        self.gelu2 = nn.GELU()
-        self.ln2 = nn.LayerNorm(self.dim)
-
-        # Residual Stream
-        # self.fc2 = nn.Linear(self.dim, patch_len)
+        self.act = nn.SiLU()
+        self.ln_patch = nn.LayerNorm(self.dim)
+        # Depthwise conv across patch positions (feature-wise depthwise)
+        self.dw_conv = nn.Conv1d(self.dim, self.dim, kernel_size=3, padding=1, groups=self.dim)
+        self.gn_dw = nn.GroupNorm(1, self.dim)
+        # Pointwise conv to mix features
+        self.pw_conv = nn.Conv1d(self.dim, self.dim, kernel_size=1)
+        self.gn_pw = nn.GroupNorm(1, self.dim)
+        # residual projection to match dims
         self.res_proj = nn.Linear(self.dim, self.dim)
+        self.res_scale = nn.Parameter(torch.tensor(0.5))
+        # head to predict
+        self.flatten = nn.Flatten(start_dim=-2)
+        self.head_fc1 = nn.Linear(self.patch_num * self.dim, pred_len * 2)
+        self.head_fc2 = nn.Linear(pred_len * 2, pred_len)
 
-        # CNN Pointwise
-        self.conv_pw = nn.Conv1d(self.dim, self.dim, kernel_size=1)
-        self.gelu3 = nn.GELU()
-        self.ln3 = nn.LayerNorm(self.dim)
+        # --- Linear / trend stream (TCN) ---
+        tcn_h = tcn_hidden or max(64, pred_len * 2)
+        self.tcn = TCNEncoder(seq_len=seq_len, hidden=tcn_h, num_layers=tcn_layers, dropout=dropout)
+        # small MLP on top of TCN + skip linear from input
+        self.trend_mlp = nn.Sequential(
+            nn.Linear(tcn_h, tcn_h // 2),
+            nn.SiLU(),
+            nn.Dropout(dropout),
+            nn.Linear(tcn_h // 2, pred_len)
+        )
+        self.trend_skip = nn.Linear(seq_len, pred_len)
 
-        # Flatten Head
-        self.flatten1 = nn.Flatten(start_dim=-2)
-        self.fc3 = nn.Linear(self.patch_num * self.dim, pred_len * 2)
-        self.gelu4 = nn.GELU()
-        self.fc4 = nn.Linear(pred_len * 2, pred_len)
+        # Combine streams
+        self.combine = nn.Linear(pred_len * 2, pred_len)
 
-        # Linear Stream (simple MLP fallback kept)
-        self.fc5 = nn.Linear(seq_len, pred_len * 4)
-        self.avgpool1 = nn.AvgPool1d(kernel_size=2)
-        self.ln_fc = nn.LayerNorm(pred_len * 2)
-        self.fc6 = nn.Linear(pred_len * 2, pred_len)
-        self.avgpool2 = nn.AvgPool1d(kernel_size=2)
-        self.ln2b = nn.LayerNorm(pred_len // 2)
-        self.fc7 = nn.Linear(pred_len // 2, pred_len)
+        self._reset_parameters()
 
-        # multiscale node encoder for trend (and optionally other comps)
-        self.node_encoder = MultiScaleNodeEncoder(seq_len=seq_len,
-                                                  node_dim=node_dim,
-                                                  num_nodes=nodes_per_scale,
-                                                  scales=scales)
-
-        # DTW-based pattern memory
-        total_nodes = nodes_per_scale * len(scales)
-        self.pattern_mem = PatternMemoryDTW(num_memory=mem_size,
-                                            node_dim=node_dim,
-                                            pred_len=pred_len,
-                                            prototype_k=mem_prototype_k,
-                                            temp=1.0)
-
-        # combine streams
-        self.fc8 = nn.Linear(pred_len * 2, pred_len)
+    def _reset_parameters(self):
+        for m in self.modules():
+            if isinstance(m, (nn.Linear, nn.Conv1d)):
+                try:
+                    nn.init.kaiming_uniform_(m.weight, a=math.sqrt(5))
+                except Exception:
+                    pass
+                if getattr(m, "bias", None) is not None:
+                    nn.init.zeros_(m.bias)
 
     def forward(self, s, t, c=None, r=None):
-        # s,t: [Batch, Input, Channel]
+        # s,t: [B, Input, C] per original convention (seasonal, trend)
         if c is not None:
             s = s + c
         if r is not None:
             t = t + r
 
-        s = s.permute(0,2,1) # to [Batch, Channel, Input]
-        t = t.permute(0,2,1) # to [Batch, Channel, Input]
+        # permute to [B, C, L]
+        s = s.permute(0, 2, 1)
+        t = t.permute(0, 2, 1)
 
-        B = s.shape[0]; C = s.shape[1]; I = s.shape[2]
-        s_flat = torch.reshape(s, (B*C, I)) # [N, L]
-        t_flat = torch.reshape(t, (B*C, I)) # [N, L]
+        B, C, L = s.shape
+        s_flat = s.reshape(B * C, L)   # [N, L]
+        t_flat = t.reshape(B * C, L)   # [N, L]
 
-        # Non-linear Stream (patching)
+        # --- Non-linear patch stream ---
+        # padding for patches if needed
         if self.padding_patch == 'end':
-            s_flat = self.padding_patch_layer(s_flat)
-        s_p = s_flat.unfold(dimension=-1, size=self.patch_len, step=self.stride)  # [N, patch_num, patch_len]
+            expected_total = self.patch_num * self.stride + self.patch_len - self.stride
+            pad_needed = max(0, expected_total - L)
+            if pad_needed > 0:
+                s_flat = F.pad(s_flat, (0, pad_needed), mode='replicate')
 
-        s_e = self.fc1(s_p)
-        s_e = self.gelu1(s_e)
-        s_e = self.ln1(s_e)
+        s_patches = s_flat.unfold(dimension=-1, size=self.patch_len, step=self.stride).contiguous()
+        if s_patches.shape[1] != self.patch_num:
+            # allow dynamic patch_num by recomputing head shapes if necessary
+            raise RuntimeError(f"runtime patch_num {s_patches.shape[1]} != init patch_num {self.patch_num}")
 
-        res = s_e
-        # convs operate on feature dim: permute to [N, dim, patch_num]
-        s_conv = s_e.permute(0,2,1).contiguous()
-        s_conv = self.conv_dw(s_conv)
-        s_conv = self.gelu2(s_conv)
-        s_conv = self.conv_pw(s_conv)
-        s_conv = self.gelu3(s_conv)
-        s_conv = s_conv.permute(0,2,1).contiguous()
-        s_conv = self.ln2(s_conv)
+        s_emb = self.fc1(s_patches)     # [N, patch_num, dim]
+        s_emb = self.act(s_emb)
+        s_emb = self.ln_patch(s_emb)
 
-        # res = self.fc2(res)
+        res = s_emb.clone()             # residual in [N, patch_num, dim]
+
+        # conv expects [N, dim, patch_num]
+        s_conv = s_emb.permute(0, 2, 1).contiguous()
+        s_conv = self.dw_conv(s_conv)
+        s_conv = self.gn_dw(s_conv)
+        s_conv = self.act(s_conv)
+
+        s_conv = self.pw_conv(s_conv)
+        s_conv = self.gn_pw(s_conv)
+        s_conv = self.act(s_conv)
+
+        s_conv = s_conv.permute(0, 2, 1).contiguous()  # [N, patch_num, dim]
+        # residual projection and scaled add
         res = self.res_proj(res)
-        s_conv = s_conv + res
+        s_conv = s_conv + self.res_scale * res
 
-        s_head = self.flatten1(s_conv)
-        s_head = self.fc3(s_head)
-        s_head = self.gelu4(s_head)
-        s_head = self.fc4(s_head)  # [N, pred_len]
+        # flatten head -> partial prediction from non-linear stream
+        s_head = self.flatten(s_conv)
+        s_head = self.head_fc1(s_head)
+        s_head = self.act(s_head)
+        s_head = self.head_fc2(s_head)  # [N, pred_len]
 
-        # Node encoding from trend (multiscale)
-        nodes = self.node_encoder(t_flat)  # [N, K_total, node_dim]
+        # --- Linear / trend stream (TCN + MLP + skip) ---
+        t_feat = self.tcn(t_flat)                # [N, tcn_hidden]
+        t_out = self.trend_mlp(t_feat) + self.trend_skip(t_flat)  # [N, pred_len]
 
-        # Optionally apply node self-attention to refine nodes (small MHA)
-        # Flatten nodes to shape for MHA: treat nodes as sequence
-        nodes_attn = nodes  # no-op here; user can add MHA externally
+        # --- Combine streams ---
+        x = torch.cat((s_head, t_out), dim=1)    # [N, pred_len*2]
+        x = self.combine(x)                      # [N, pred_len]
 
-        # DTW memory read
-        t_out, dists = self.pattern_mem(nodes_attn)  # [N, pred_len]
-
-        # Streams concat
-        x = torch.cat((s_head, t_out), dim=1)
-        x = self.fc8(x)
-
-        x = torch.reshape(x, (B, C, self.pred_len)) # [B, C, pred_len]
-        x = x.permute(0,2,1) # to [B, pred_len, C]
+        # restore shape [B*C, pred_len] -> [B, pred_len, C]
+        x = x.reshape(B, C, self.pred_len).permute(0, 2, 1)
         return x
