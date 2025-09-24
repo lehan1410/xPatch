@@ -180,7 +180,8 @@ class Network(nn.Module):
         self.ln2 = nn.LayerNorm(self.dim)
 
         # Residual Stream
-        self.fc2 = nn.Linear(self.dim, patch_len)
+        # self.fc2 = nn.Linear(self.dim, patch_len)
+        self.res_proj = nn.Linear(self.dim, self.dim)
 
         # CNN Pointwise
         self.conv_pw = nn.Conv1d(self.dim, self.dim, kernel_size=1)
@@ -189,7 +190,7 @@ class Network(nn.Module):
 
         # Flatten Head
         self.flatten1 = nn.Flatten(start_dim=-2)
-        self.fc3 = nn.Linear(self.patch_num * patch_len, pred_len * 2)
+        self.fc3 = nn.Linear(self.patch_num * self.dim, pred_len * 2)
         self.gelu4 = nn.GELU()
         self.fc4 = nn.Linear(pred_len * 2, pred_len)
 
@@ -252,7 +253,8 @@ class Network(nn.Module):
         s_conv = s_conv.permute(0,2,1).contiguous()
         s_conv = self.ln2(s_conv)
 
-        res = self.fc2(res)
+        # res = self.fc2(res)
+        res = self.res_proj(res)
         s_conv = s_conv + res
 
         s_head = self.flatten1(s_conv)
