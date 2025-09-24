@@ -1,4 +1,3 @@
-# ...existing code...
 import math
 import torch
 import torch.nn.functional as F
@@ -24,7 +23,8 @@ class HypergraphMemory(nn.Module):
         self.time_enc = nn.Sequential(
             nn.Conv1d(1, node_dim, kernel_size=3, padding=1),
             nn.GELU(),
-            nn.LayerNorm([node_dim, seq_len])  # normalise conv channels
+            # LayerNorm over channel dimension; using LayerNorm with shape tuple for conv output
+            nn.LayerNorm([node_dim, seq_len])
         )
 
         # compute pooling scores for nodes from per-time features
@@ -50,12 +50,11 @@ class HypergraphMemory(nn.Module):
 
         # final head from fused representation -> pred_len
         self.head = nn.Sequential(
-            nn.Linear(node_dim, node_dim // 2),
+            nn.Linear(node_dim, max(node_dim // 2, 8)),
             nn.GELU(),
-            nn.Linear(node_dim // 2, pred_len)
+            nn.Linear(max(node_dim // 2, 8), pred_len)
         )
 
-        # small init
         self._reset_parameters()
 
     def _reset_parameters(self):
@@ -96,16 +95,14 @@ class HypergraphMemory(nn.Module):
         q = self.q_proj(graph_summary)  # [N, memory_dim]
         # similarity and read
         mem = self.memory.unsqueeze(0).expand(N, -1, -1)  # [N, memory_size, memory_dim]
-        # compute similarity q @ mem^T -> [N, memory_size]
         sims = torch.einsum('nd,nmd->nm', q, mem)
-        weights = F.softmax(sims / math.sqrt(self.memory_dim), dim=1)  # [N, memory_size]
+        weights = F.softmax(sims / math.sqrt(max(1, self.memory_dim)), dim=1)  # [N, memory_size]
         read = torch.einsum('nm,nmd->nd', weights, mem)  # [N, memory_dim]
 
         # fuse read with graph summary -> node_dim
-        # if dims differ, project read to node_dim (or pad/truncate)
         if read.shape[1] != graph_summary.shape[1]:
-            # map read -> node_dim
-            read = nn.Linear(read.shape[1], graph_summary.shape[1]).to(read.device)(read)
+            proj = nn.Linear(read.shape[1], graph_summary.shape[1]).to(read.device)
+            read = proj(read)
         fused = self.read_ff(torch.cat([graph_summary, read], dim=1))
 
         # predict
@@ -113,9 +110,77 @@ class HypergraphMemory(nn.Module):
         return out
 
 
+class DMNAdapter(nn.Module):
+    """
+    Adapter that builds hypernodes by soft pooling (like HypergraphMemory),
+    then calls an external DMN module and reduces outputs to pred_len.
+    dmn_module.forward(nodes, [time_node_embs, global_emb]) is expected.
+    """
+    def __init__(self, seq_len, pred_len, num_nodes, node_dim, dmn_module=None):
+        super(DMNAdapter, self).__init__()
+        self.seq_len = seq_len
+        self.pred_len = pred_len
+        self.num_nodes = num_nodes
+        self.node_dim = node_dim
+        self.dmn = dmn_module
+
+        self.time_enc = nn.Sequential(
+            nn.Conv1d(1, node_dim, kernel_size=3, padding=1),
+            nn.GELU(),
+            nn.LayerNorm([node_dim, seq_len])
+        )
+        self.pool_score = nn.Linear(node_dim, num_nodes)
+        # learnable global node embedding used as second argument to DMN
+        self.global_node_emb = nn.Parameter(torch.randn(num_nodes, node_dim) * 0.05)
+        # readout if DMN returns node-wise features
+        self.readout = nn.Linear(node_dim, pred_len)
+
+        self._reset_parameters()
+
+    def _reset_parameters(self):
+        for m in self.modules():
+            if isinstance(m, (nn.Linear, nn.Conv1d)):
+                try:
+                    nn.init.kaiming_uniform_(m.weight, a=math.sqrt(5))
+                except Exception:
+                    pass
+                if getattr(m, "bias", None) is not None:
+                    nn.init.zeros_(m.bias)
+
+    def forward(self, t_flat):
+        # t_flat: [N, L]
+        N, L = t_flat.shape
+        x = t_flat.unsqueeze(1)                       # [N,1,L]
+        tf = self.time_enc(x)                         # [N, node_dim, L]
+        tf_t = tf.permute(0, 2, 1).contiguous()       # [N, L, node_dim]
+        scores = self.pool_score(tf_t)                # [N, L, num_nodes]
+        scores = F.softmax(scores, dim=1)
+        nodes = torch.einsum('nlk,nld->nkd', scores, tf_t)  # [N, num_nodes, node_dim]
+
+        if self.dmn is None:
+            # fallback: average nodes and map
+            pooled = nodes.mean(dim=1)               # [N, node_dim]
+            return self.readout(pooled)
+
+        # DMN expected inputs: nodes [N,num_nodes,node_dim], node_embeddings list
+        dmn_out = self.dmn(nodes, [nodes, self.global_node_emb])  # adapt signature to user's DMN
+        # dmn_out may be [N, num_nodes, D] or [N, pred_len]
+        if dmn_out.dim() == 3:
+            pooled = dmn_out.mean(dim=1)
+        else:
+            pooled = dmn_out
+        # ensure final shape
+        if pooled.shape[1] != self.pred_len:
+            out = self.readout(pooled)
+        else:
+            out = pooled
+        return out
+
+
 class Network(nn.Module):
     def __init__(self, seq_len, pred_len, patch_len, stride, padding_patch,
-                 dropout=0.1, hg_nodes=8, hg_node_dim=128, mem_size=64, mem_dim=128):
+                 dropout=0.1, hg_nodes=8, hg_node_dim=128, mem_size=64, mem_dim=128,
+                 use_dmn=False, dmn_module=None):
         super(Network, self).__init__()
 
         # params
@@ -143,10 +208,15 @@ class Network(nn.Module):
         self.head_fc1 = nn.Linear(self.patch_num * self.dim, pred_len * 2)
         self.head_fc2 = nn.Linear(pred_len * 2, pred_len)
 
-        # Hypergraph + DMN module replaces simple linear stream
-        self.hgmem = HypergraphMemory(seq_len=seq_len, pred_len=pred_len,
-                                      num_nodes=hg_nodes, node_dim=hg_node_dim,
-                                      memory_size=mem_size, memory_dim=mem_dim)
+        # Pattern memory / Hypergraph memory for linear-like stream
+        if use_dmn and (dmn_module is not None):
+            self.hgmem = DMNAdapter(seq_len=seq_len, pred_len=pred_len,
+                                    num_nodes=hg_nodes, node_dim=hg_node_dim,
+                                    dmn_module=dmn_module)
+        else:
+            self.hgmem = HypergraphMemory(seq_len=seq_len, pred_len=pred_len,
+                                          num_nodes=hg_nodes, node_dim=hg_node_dim,
+                                          memory_size=mem_size, memory_dim=mem_dim)
 
         # fallback simple linear MLP (kept for compatibility)
         hidden = max(seq_len, pred_len * 2)
@@ -167,7 +237,7 @@ class Network(nn.Module):
 
     def _reset_parameters(self):
         for m in self.modules():
-            if isinstance(m, nn.Linear) or isinstance(m, nn.Conv1d):
+            if isinstance(m, (nn.Linear, nn.Conv1d)):
                 try:
                     nn.init.kaiming_uniform_(m.weight, a=math.sqrt(5))
                 except Exception:
@@ -222,12 +292,10 @@ class Network(nn.Module):
         s_head = self.act(s_head)
         s_head = self.head_fc2(s_head)  # [N, pred_len]
 
-        # --- Hypergraph + DMN for linear-like stream ---
-        # use trend sequence t_flat as primary signal for hgmem
+        # --- Hypergraph / DMN stream ---
         try:
             t_out = self.hgmem(t_flat)  # [N, pred_len]
         except Exception:
-            # fallback to stable MLP
             t_norm = self.t_ln(t_flat)
             t_out = self.linear_mlp(t_norm) + self.linear_skip(t_flat)
 
@@ -238,4 +306,3 @@ class Network(nn.Module):
         # restore shapes
         x = x.reshape(B, C, self.pred_len).permute(0, 2, 1)
         return x
-# ...existing code...
