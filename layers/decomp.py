@@ -1,48 +1,84 @@
+import math
 import torch
+import torch.nn.functional as F
 from torch import nn
 
 from layers.ema import EMA
 from layers.dema import DEMA
 
-class MultiScaleDecompose(nn.Module):
-    """
-    Multi-scale learnable decomposition.
-    Given input x shape [B, L, C] (same as project convention [Batch, Input, Channel]),
-    returns seasonal, trend, cyclic, irregular each with same shape.
-    Uses three odd kernel sizes (long, med, short) to produce multiscale smoothers.
-    """
-    def __init__(self, kernel_sizes=(101, 31, 7)):
-        super(MultiScaleDecompose, self).__init__()
-        assert len(kernel_sizes) == 3, "Expect three kernel sizes (long, med, short)"
-        for k in kernel_sizes:
-            assert k % 2 == 1, "kernel sizes must be odd"
-        self.k_long, self.k_med, self.k_short = kernel_sizes
+__all__ = ["MultiScaleTCNDecompose", "DECOMP"]
 
-        # learnable logits for each kernel -> softmax to get normalized smoothing kernel
-        self.logits_long = nn.Parameter(torch.randn(self.k_long))
-        self.logits_med = nn.Parameter(torch.randn(self.k_med))
-        self.logits_short = nn.Parameter(torch.randn(self.k_short))
+class TCNScale(nn.Module):
+    """
+    Small TCN stack that achieves a target receptive field (approx kernel size).
+    Input: x of shape [N, L] -> processes as [N, 1, L] and returns [N, L].
+    Shared weights across channels (applied on flattened B*C batch).
+    """
+    def __init__(self, target_kernel, kernel_size=3, hidden_channels=1, activation=nn.SiLU):
+        super(TCNScale, self).__init__()
+        assert target_kernel >= 1 and kernel_size >= 3 and kernel_size % 2 == 1
+        self.kernel_size = kernel_size
+        self.activation = activation()
+        # compute number of dilated conv layers needed to reach receptive field >= target_kernel
+        rf = 1
+        dilation = 1
+        layers = []
+        while rf < target_kernel:
+            layers.append(dilation)
+            rf += (kernel_size - 1) * dilation
+            dilation *= 2
+        self.dilations = layers
+        convs = []
+        for d in self.dilations:
+            conv = nn.Conv1d(in_channels=1, out_channels=1,
+                             kernel_size=kernel_size, padding=d, dilation=d, bias=True)
+            convs.append(conv)
+        self.convs = nn.ModuleList(convs)
+        # small residual scale parameter to stabilise training
+        self.res_scale = nn.Parameter(torch.tensor(0.5))
 
-    def _smooth(self, x_flat, logits, k):
+    def forward(self, x_flat):
         # x_flat: [N, L]
-        w = F.softmax(logits, dim=0).view(1, 1, k).to(x_flat.dtype).to(x_flat.device)
-        x_in = x_flat.unsqueeze(1)  # [N,1,L]
-        pad = k // 2
-        out = F.conv1d(x_in, w, padding=pad)  # [N,1,L]
+        x = x_flat.unsqueeze(1)  # [N,1,L]
+        out = x
+        for conv in self.convs:
+            y = conv(out)
+            y = self.activation(y)
+            # residual in channel dimension
+            out = out + self.res_scale * y
         return out.squeeze(1)  # [N, L]
 
+
+class MultiScaleTCNDecompose(nn.Module):
+    """
+    Multi-scale decomposition with three TCN scales (long, med, short).
+    Input x: [B, L, C] -> outputs seasonal, trend, cyclic, irregular each [B, L, C].
+    The TCNs operate on flattened batch B*C so weights are shared across channels.
+    """
+    def __init__(self, kernel_sizes=(101, 31, 7)):
+        super(MultiScaleTCNDecompose, self).__init__()
+        assert len(kernel_sizes) == 3, "Expect three kernel sizes (long, med, short)"
+        for k in kernel_sizes:
+            assert k % 1 == 0 and k > 0
+        self.k_long, self.k_med, self.k_short = kernel_sizes
+
+        # build TCN stacks per scale
+        self.scale_long = TCNScale(self.k_long)
+        self.scale_med = TCNScale(self.k_med)
+        self.scale_short = TCNScale(self.k_short)
+
     def forward(self, x):
-        # expect x: [B, Input, Channel]
+        # expect x: [B, L, C]
         if x.dim() != 3:
-            raise ValueError("MultiScaleDecompose expects input shape [B, Input, Channel]")
+            raise ValueError("MultiScaleTCNDecompose expects input shape [B, L, C]")
 
         B, L, C = x.shape
-        # reshape to [B*C, L] for per-channel independent smoothing
-        x_perm = x.permute(0,2,1).reshape(B * C, L)  # [N, L]
+        # reshape to [B*C, L] for per-channel independent processing
+        x_perm = x.permute(0, 2, 1).reshape(B * C, L)  # [N, L]
 
-        s_long = self._smooth(x_perm, self.logits_long, self.k_long)
-        s_med = self._smooth(x_perm, self.logits_med, self.k_med)
-        s_short = self._smooth(x_perm, self.logits_short, self.k_short)
+        s_long = self.scale_long(x_perm)   # [N, L]
+        s_med = self.scale_med(x_perm)     # [N, L]
+        s_short = self.scale_short(x_perm) # [N, L]
 
         # components in flattened domain
         trend_flat = s_long
@@ -52,7 +88,7 @@ class MultiScaleDecompose(nn.Module):
 
         # reshape back to [B, L, C]
         def restore(z):
-            return z.reshape(B, C, L).permute(0,2,1)  # [B, L, C]
+            return z.reshape(B, C, L).permute(0, 2, 1)  # [B, L, C]
 
         seasonal = restore(seasonal_flat)
         trend = restore(trend_flat)
@@ -61,11 +97,12 @@ class MultiScaleDecompose(nn.Module):
 
         return seasonal, trend, cyclic, irregular
 
+
 class DECOMP(nn.Module):
     """
-    Series decomposition block
+    Series decomposition block that wraps EMA/DEMA or learnable MultiScaleTCNDecompose.
     """
-    def __init__(self, ma_type, alpha, beta, learn_kernels=(101,31,7)):
+    def __init__(self, ma_type, alpha, beta, learn_kernels=(101, 31, 7)):
         super(DECOMP, self).__init__()
         self.ma_type = ma_type
         if ma_type == 'ema':
@@ -73,7 +110,9 @@ class DECOMP(nn.Module):
         elif ma_type == 'dema':
             self.ma = DEMA(alpha, beta)
         elif ma_type == 'learn':
-            self.ma = MultiScaleDecompose(kernel_sizes=learn_kernels)
+            self.ma = MultiScaleTCNDecompose(kernel_sizes=learn_kernels)
+        else:
+            raise ValueError(f"Unknown ma_type: {ma_type}")
 
     def forward(self, x):
         if self.ma_type in ('ema', 'dema'):
