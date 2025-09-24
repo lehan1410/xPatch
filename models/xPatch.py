@@ -3,7 +3,6 @@ import torch.nn as nn
 import math
 
 from layers.decomp import DECOMP
-from layers.transformer import TransformerNetwork
 from layers.revin import RevIN
 
 class Model(nn.Module):
