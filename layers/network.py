@@ -1,17 +1,6 @@
 import torch
 from torch import nn
 
-
-class HighwayConnection(nn.Module):
-    def __init__(self, dim):
-        super().__init__()
-        self.transform = nn.Linear(dim, dim)
-        self.gate = nn.Linear(dim, dim)
-    def forward(self, x):
-        H = self.transform(x)
-        T = torch.sigmoid(self.gate(x))
-        return H * T + x * (1 - T)
-
 class Network(nn.Module):
     def __init__(self, seq_len, pred_len, patch_len, stride, padding_patch):
         super(Network, self).__init__()
@@ -33,8 +22,6 @@ class Network(nn.Module):
         # Patch Embedding
         self.fc1 = nn.Linear(patch_len, self.dim)
         self.gelu1 = nn.GELU()
-        self.swish = nn.SiLU()
-        self.mish = nn.Mish()
         self.bn1 = nn.BatchNorm1d(self.patch_num)
         
         # CNN Depthwise
@@ -42,10 +29,6 @@ class Network(nn.Module):
                                patch_len, patch_len, groups=self.patch_num)
         self.gelu2 = nn.GELU()
         self.bn2 = nn.BatchNorm1d(self.patch_num)
-
-        self.dilated_conv = nn.Conv1d(self.patch_num, self.patch_num, kernel_size=3, dilation=2, padding=2, groups=self.patch_num)
-        self.gelu_dil = nn.GELU()
-        self.bn_dil = nn.BatchNorm1d(self.patch_num)
 
         # Residual Stream
         self.fc2 = nn.Linear(self.dim, patch_len)
@@ -58,10 +41,8 @@ class Network(nn.Module):
         # Flatten Head
         self.flatten1 = nn.Flatten(start_dim=-2)
         self.fc3 = nn.Linear(self.patch_num * patch_len, pred_len * 2)
-        self.glu = nn.GLU(dim=-1)
         self.gelu4 = nn.GELU()
-        self.fc4 = nn.Linear(pred_len, pred_len)
-        self.highway_s = HighwayConnection(pred_len)
+        self.fc4 = nn.Linear(pred_len * 2, pred_len)
 
         # Linear Stream
         # MLP
@@ -74,21 +55,14 @@ class Network(nn.Module):
         self.ln2 = nn.LayerNorm(pred_len // 2)
 
         self.fc7 = nn.Linear(pred_len // 2, pred_len)
-        self.highway_t = HighwayConnection(pred_len)
 
         # Streams Concatination
         self.fc8 = nn.Linear(pred_len * 2, pred_len)
 
-    def forward(self, s, t, c=None, r=None):
+    def forward(self, s, t):
         # x: [Batch, Input, Channel]
         # s - seasonality
         # t - trend
-
-        if c is not None:
-            s = s + c
-        # If irregular provided, merge into trend/linear stream as residual
-        if r is not None:
-            t = t + r
         
         s = s.permute(0,2,1) # to [Batch, Channel, Input]
         t = t.permute(0,2,1) # to [Batch, Channel, Input]
@@ -110,8 +84,6 @@ class Network(nn.Module):
         # Patch Embedding
         s = self.fc1(s)
         s = self.gelu1(s)
-        s = self.swish(s)
-        s = self.mish(s)
         s = self.bn1(s)
 
         res = s
@@ -120,11 +92,6 @@ class Network(nn.Module):
         s = self.conv1(s)
         s = self.gelu2(s)
         s = self.bn2(s)
-
-        # Dilated Convolution
-        s = self.dilated_conv(s)
-        s = self.gelu_dil(s)
-        s = self.bn_dil(s)
 
         # Residual Stream
         res = self.fc2(res)
@@ -138,10 +105,8 @@ class Network(nn.Module):
         # Flatten Head
         s = self.flatten1(s)
         s = self.fc3(s)
-        s = self.glu(s)
         s = self.gelu4(s)
         s = self.fc4(s)
-        s = self.highway_s(s)
 
         # Linear Stream
         # MLP
@@ -154,7 +119,6 @@ class Network(nn.Module):
         t = self.ln2(t)
 
         t = self.fc7(t)
-        t = self.highway_t(t)
 
         # Streams Concatination
         x = torch.cat((s, t), dim=1)
