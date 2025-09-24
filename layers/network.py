@@ -31,32 +31,20 @@ class MultiScaleNodeEncoder(nn.Module):
             layers = []
             rf = 1
             dilation = 1
+            in_ch = 1
+            # ensure subsequent convs accept node_dim channels
             while rf < s:
-                layers.append(nn.Conv1d(1, node_dim, kernel_size=kernel_size, padding=dilation, dilation=dilation))
+                layers.append(nn.Conv1d(in_ch, node_dim, kernel_size=kernel_size, padding=dilation, dilation=dilation))
                 layers.append(nn.GELU())
-                layers.append(nn.LayerNorm([node_dim, seq_len]))  # normalize conv output
+                # normalize across feature channels (Conv1d output shape [N, node_dim, L])
+                layers.append(nn.BatchNorm1d(node_dim))
                 rf += (kernel_size - 1) * dilation
                 dilation *= 2
+                in_ch = node_dim
             self.scale_convs.append(nn.Sequential(*layers))
 
         # pooling score network per scale -> produce num_nodes per scale
         self.pool_scores = nn.ModuleList([nn.Linear(node_dim, num_nodes) for _ in scales])
-
-    def forward(self, x_flat):
-        # x_flat: [N, L]
-        N, L = x_flat.shape
-        x = x_flat.unsqueeze(1)  # [N,1,L]
-        nodes_per_scale = []
-        for conv, pool in zip(self.scale_convs, self.pool_scores):
-            z = conv(x)                         # [N, node_dim, L]
-            z_t = z.permute(0, 2, 1).contiguous()  # [N, L, node_dim]
-            scores = pool(z_t)                  # [N, L, num_nodes]
-            scores = F.softmax(scores, dim=1)   # soft-pool over time
-            nodes = torch.einsum('nlk,nld->nkd', scores, z_t)  # [N, num_nodes, node_dim]
-            nodes_per_scale.append(nodes)
-        # concat nodes across scales -> [N, K_total, node_dim]
-        nodes = torch.cat(nodes_per_scale, dim=1)
-        return nodes  # [N, K_total, node_dim]
 
 
 def dtw_distance_vectors(query_nodes, proto_nodes):
