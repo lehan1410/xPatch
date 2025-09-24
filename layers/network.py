@@ -1,5 +1,6 @@
-# ...existing code...
+import math
 import torch
+import torch.nn.functional as F
 from torch import nn
 
 class Network(nn.Module):
@@ -8,192 +9,131 @@ class Network(nn.Module):
 
         # Parameters
         self.pred_len = pred_len
+        self.seq_len = seq_len
 
-        # Patching params
+        # Non-linear Stream / patching params
         self.patch_len = patch_len
         self.stride = stride
         self.padding_patch = padding_patch
+
+        # feature dim per patch (kept as original design)
         self.dim = patch_len * patch_len
-        self.patch_num = (seq_len - patch_len)//stride + 1
+
+        # compute expected number of patches (kept fixed per init seq_len)
+        self.patch_num = (seq_len - patch_len) // stride + 1
+        # if user requested end-padding, keep patch_num constant but pad to match it at runtime
         if padding_patch == 'end':
-            self.padding_patch_layer = nn.ReplicationPad1d((0, stride))
-            self.patch_num += 1
+            # no runtime layer object here; we'll pad in forward with replicate mode
+            pass
 
-        # ---------------- Non-linear (complex) stream ----------------
-        # Patch embedding
+        # Patch Embedding
         self.fc1 = nn.Linear(patch_len, self.dim)
-        self.act1 = nn.GELU()
-        self.bn1 = nn.BatchNorm1d(self.patch_num)
+        self.act = nn.SiLU()
+        # normalize across feature dim (stable for small batches)
+        self.ln_embed = nn.LayerNorm(self.dim)
 
-        # Depthwise conv (local features per patch index) - base
-        # conv1 reduces the temporal length from `dim` -> `patch_len` (stride=patch_len)
-        self.conv1 = nn.Conv1d(self.patch_num, self.patch_num,
-                               patch_len, patch_len, groups=self.patch_num)
-        self.act2 = nn.GELU()
-        self.bn2 = nn.BatchNorm1d(self.patch_num)
+        # Depthwise + pointwise convs operate on feature dim as channels.
+        # We'll use depthwise conv (groups=self.dim) and GroupNorm(1, dim) for stability.
+        self.conv1 = nn.Conv1d(self.dim, self.dim, kernel_size=3, padding=1, groups=self.dim)
+        self.gn1 = nn.GroupNorm(1, self.dim)
+        self.conv2 = nn.Conv1d(self.dim, self.dim, kernel_size=1)
+        self.gn2 = nn.GroupNorm(1, self.dim)
 
-        # --- Multi-scale / dilated depthwise convolutions (operate on conv1 output!) ---
-        # These must run on the reduced length (=patch_len) so shapes match for addition
-        self.ms_conv_k3 = nn.Conv1d(self.patch_num, self.patch_num, kernel_size=3, padding=1, groups=self.patch_num)
-        self.ms_conv_d2 = nn.Conv1d(self.patch_num, self.patch_num, kernel_size=3, dilation=2, padding=2, groups=self.patch_num)
-        self.bn_ms = nn.BatchNorm1d(self.patch_num)
-        # ------------------------------------------------------------------
+        # Residual projection: keep same dim to add easily
+        self.fc2 = nn.Linear(self.dim, self.dim)
 
-        # Residual projection back to patch length
-        self.fc2 = nn.Linear(self.dim, patch_len)
-
-        # Pointwise conv to mix patch channels (local mixing along patch_idx)
-        self.conv2 = nn.Conv1d(self.patch_num, self.patch_num, 1, 1)
-        self.act3 = nn.GELU()
-        self.bn3 = nn.BatchNorm1d(self.patch_num)
-
-        # ---------------- Cross-channel mixing (learn multi-variate deps) ----------------
-        # channel_mixer operates across patch-channel axis; small bottleneck to limit params
-        cm_hidden = max(16, self.patch_num // 2)
-        self.channel_mixer = nn.Sequential(
-            nn.Linear(self.patch_num, cm_hidden),
-            nn.GELU(),
-            nn.Linear(cm_hidden, self.patch_num)
-        )
-        # ----------------------------------------------------------------------------------
-
-        # Flatten & complex head (seasonal part)
+        # Flatten head (depends on patch_num and dim)
         self.flatten1 = nn.Flatten(start_dim=-2)
-        self.fc3 = nn.Linear(self.patch_num * patch_len, pred_len * 2)
-        self.act4 = nn.GELU()
-        self.fc4 = nn.Linear(pred_len * 2, pred_len)   # produces seasonal complex output
+        self.fc3 = nn.Linear(self.patch_num * self.dim, pred_len * 2)
+        self.act2 = nn.SiLU()
+        self.fc4 = nn.Linear(pred_len * 2, pred_len)
 
-        # ---------------- Linear (trend) stream ----------------
-        self.fc5 = nn.Linear(seq_len, pred_len * 4)
-        self.avgpool1 = nn.AvgPool1d(kernel_size=2)
-        self.ln1 = nn.LayerNorm(pred_len * 2)
+        # Linear Stream: stable MLP with LayerNorm + SiLU
+        self.linear_mlp = nn.Sequential(
+            nn.Linear(seq_len, max(seq_len, pred_len * 2)),
+            nn.SiLU(),
+            nn.LayerNorm(max(seq_len, pred_len * 2)),
+            nn.Linear(max(seq_len, pred_len * 2), pred_len)
+        )
 
-        self.fc6 = nn.Linear(pred_len * 2, pred_len)
-        self.avgpool2 = nn.AvgPool1d(kernel_size=2)
-        self.ln2 = nn.LayerNorm(pred_len // 2)
-
-        self.fc7 = nn.Linear(pred_len // 2, pred_len)  # produces trend complex output
-
-        # ---------------- Adaptive baseline & gates ----------------
-        # simple baselines (help on simple datasets)
-        self.simple_baseline = nn.Linear(seq_len, pred_len)
-        self.simple_baseline_c = nn.Linear(seq_len, pred_len)
-        self.simple_baseline_r = nn.Linear(seq_len, pred_len)
-
-        # gate to blend complex vs baseline
-        self.gate_fc = nn.Linear(pred_len * 2, pred_len)
-        self.sigmoid = nn.Sigmoid()
-        self.dropout = nn.Dropout(p=0.1)
-
-        # learnable residual scales for c and r
-        self.alpha_c = nn.Parameter(torch.zeros(pred_len))
-        self.alpha_r = nn.Parameter(torch.zeros(pred_len))
-
-        # final projector for complex s+t combined
+        # Streams Concatenation
         self.fc8 = nn.Linear(pred_len * 2, pred_len)
 
     def forward(self, s, t, c=None, r=None):
-        # s, t, c, r: [B, L, C] (Input length L, Channels C)
-        # do NOT add c -> s or r -> t directly; use learned baselines and gating
+        # s,t: [Batch, Input, Channel] from caller
+        if c is not None:
+            s = s + c
+        if r is not None:
+            t = t + r
 
-        # keep originals for baselines
-        c_in = c
-        r_in = r
+        # to [Batch, Channel, Input]
+        s = s.permute(0, 2, 1)
+        t = t.permute(0, 2, 1)
 
-        # permute and merge batch/channel for independent processing
-        s = s.permute(0,2,1)  # [B, C, L]
-        t = t.permute(0,2,1)
-        B, C, L = s.shape
-        N = B * C
-        s = s.reshape(N, L)   # [N, L]
-        t = t.reshape(N, L)   # [N, L]
+        # channel-independent processing: merge batch and channel
+        B = s.shape[0]
+        C = s.shape[1]
+        I = s.shape[2]
+        s = torch.reshape(s, (B * C, I))  # [B*C, Input]
+        t = torch.reshape(t, (B * C, I))  # [B*C, Input]
 
-        # ---- Compute baselines ----
-        baseline_t = self.simple_baseline(t)  # [N, pred_len]
-
-        if c_in is not None:
-            c_tmp = c_in.permute(0,2,1).reshape(N, L)
-            baseline_c = self.simple_baseline_c(c_tmp)
-        else:
-            baseline_c = torch.zeros_like(baseline_t, device=baseline_t.device)
-
-        if r_in is not None:
-            r_tmp = r_in.permute(0,2,1).reshape(N, L)
-            baseline_r = self.simple_baseline_r(r_tmp)
-        else:
-            baseline_r = torch.zeros_like(baseline_t, device=baseline_t.device)
-
-        # ---------------- complex seasonal stream ----------------
+        # --- Non-linear stream: patching ---
+        # pad to ensure consistent number of patches = self.patch_num
         if self.padding_patch == 'end':
-            s_pad = self.padding_patch_layer(s)
-        else:
-            s_pad = s
-        s_unf = s_pad.unfold(dimension=-1, size=self.patch_len, step=self.stride)
-        # s_unf: [N, patch_num, patch_len]
+            expected_total = self.patch_num * self.stride + self.patch_len - self.stride
+            pad_needed = max(0, expected_total - I)
+            if pad_needed > 0:
+                s = F.pad(s, (0, pad_needed), mode='replicate')
 
-        s_e = self.fc1(s_unf)         # [N, patch_num, dim]
-        s_e = self.act1(s_e)
-        s_e = self.bn1(s_e)
+        # unfold into patches: [B*C, patch_num_runtime, patch_len]
+        s = s.unfold(dimension=-1, size=self.patch_len, step=self.stride).contiguous()
+        # If runtime patch count differs from init, raise clear error (keeps shapes predictable)
+        if s.shape[1] != self.patch_num:
+            raise RuntimeError(f"runtime patch_num {s.shape[1]} != init patch_num {self.patch_num}")
 
-        # base depthwise conv -> reduces temporal length to patch_len
-        s_base = self.conv1(s_e)      # [N, patch_num, patch_len]
-        s_base = self.act2(s_base)
-        s_base = self.bn2(s_base)
+        # Patch embedding (applies on last dim)
+        s = self.fc1(s)               # [B*C, patch_num, dim]
+        s = self.act(s)
+        s = self.ln_embed(s)
 
-        # multi-scale / dilated depthwise convs applied on the reduced-length tensor
-        s_ms1 = self.ms_conv_k3(s_base)  # [N, patch_num, patch_len]
-        s_ms2 = self.ms_conv_d2(s_base)  # [N, patch_num, patch_len]
-        s_ms = s_base + s_ms1 + s_ms2
-        s_ms = self.bn_ms(s_ms)
+        # keep residual (same shape)
+        res = s
 
-        # residual projection (from high-dim embedding down to patch_len) and add
-        res = self.fc2(s_e)             # [N, patch_num, patch_len]
-        s_ms = s_ms + res
+        # prepare for convs: Conv1d expects [N, C, L] where C = feature dim
+        s = s.permute(0, 2, 1).contiguous()  # [B*C, dim, patch_num]
 
-        # pointwise mixing (per-patch mixing)
-        s_ms = self.conv2(s_ms)
-        s_ms = self.act3(s_ms)
-        s_ms = self.bn3(s_ms)
+        # depthwise conv + GN + act
+        s = self.conv1(s)
+        s = self.gn1(s)
+        s = self.act(s)
 
-        # cross-channel mixing: move last dim to apply channel_mixer over channels
-        # s_ms: [N, patch_num, patch_len] -> transpose to [N, patch_len, patch_num]
-        s_mix = s_ms.transpose(1, 2)            # [N, patch_len, patch_num]
-        s_mix = self.channel_mixer(s_mix)       # [N, patch_len, patch_num]
-        s_ms = s_mix.transpose(1, 2)            # [N, patch_num, patch_len]
+        # pointwise conv + GN + act
+        s = self.conv2(s)
+        s = self.gn2(s)
+        s = self.act(s)
 
-        # flatten and seasonal complex head
-        s_flat = self.flatten1(s_ms)   # [N, patch_num * patch_len]
-        s_flat = self.fc3(s_flat)
-        s_flat = self.act4(s_flat)
-        s_complex = self.fc4(s_flat)  # [N, pred_len]
+        # back to [B*C, patch_num, dim]
+        s = s.permute(0, 2, 1).contiguous()
 
-        # ---------------- complex trend stream ----------------
-        t_cpx = self.fc5(t)                     # [N, pred_len*4]
-        t_cpx = self.avgpool1(t_cpx.unsqueeze(1)).squeeze(1)
-        t_cpx = self.ln1(t_cpx)
+        # residual projection and add
+        res = self.fc2(res)  # [B*C, patch_num, dim]
+        s = s + res
 
-        t_cpx = self.fc6(t_cpx)
-        t_cpx = self.avgpool2(t_cpx.unsqueeze(1)).squeeze(1)
-        t_cpx = self.ln2(t_cpx)
+        # Flatten head -> predict partial output
+        s = self.flatten1(s)  # [B*C, patch_num * dim]
+        s = self.fc3(s)
+        s = self.act2(s)
+        s = self.fc4(s)        # [B*C, pred_len]
 
-        t_cpx = self.fc7(t_cpx)                 # [N, pred_len]
+        # --- Linear stream (reworked MLP) ---
+        t = self.linear_mlp(t)  # [B*C, pred_len]
 
-        # ---------------- combine complex streams ----------------
-        complex_cat = torch.cat((s_complex, t_cpx), dim=1)  # [N, pred_len*2]
-        complex_cat = self.dropout(complex_cat)
-        complex_proj = self.fc8(complex_cat)               # [N, pred_len]
+        # --- Combine streams ---
+        x = torch.cat((s, t), dim=1)  # [B*C, pred_len*2]
+        x = self.fc8(x)               # [B*C, pred_len]
 
-        # ---------------- adaptive blending with baseline ----------------
-        gate_in = torch.cat((complex_proj, baseline_t), dim=1)  # [N, pred_len*2]
-        gate = self.sigmoid(self.gate_fc(gate_in))              # [N, pred_len]
-        blended = gate * complex_proj + (1.0 - gate) * baseline_t
+        # restore [Batch, Channel, Output] then permute to [Batch, Output, Channel]
+        x = torch.reshape(x, (B, C, self.pred_len))
+        x = x.permute(0, 2, 1)
 
-        # add scaled baseline contributions from c and r
-        alpha_c = torch.sigmoid(self.alpha_c).unsqueeze(0)  # [1, pred_len]
-        alpha_r = torch.sigmoid(self.alpha_r).unsqueeze(0)
-        out = blended + alpha_c * baseline_c + alpha_r * baseline_r
-
-        # reshape back to [B, pred_len, C]
-        out = out.reshape(B, C, self.pred_len).permute(0,2,1)
-        return out
-# ...existing code...
+        return x
