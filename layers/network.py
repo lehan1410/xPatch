@@ -59,10 +59,16 @@ class Network(nn.Module):
         # Streams Concatination
         self.fc8 = nn.Linear(pred_len * 2, pred_len)
 
-    def forward(self, s, t):
+    def forward(self, s, t, c=None, r=None):
         # x: [Batch, Input, Channel]
         # s - seasonality
         # t - trend
+
+        if c is not None:
+            s = s + c
+        # If irregular provided, merge into trend/linear stream as residual
+        if r is not None:
+            t = t + r
         
         s = s.permute(0,2,1) # to [Batch, Channel, Input]
         t = t.permute(0,2,1) # to [Batch, Channel, Input]
