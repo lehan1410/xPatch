@@ -1,144 +1,85 @@
-import math
 import torch
-import torch.nn.functional as F
 from torch import nn
 
-class Network(nn.Module):
-    def __init__(self, seq_len, pred_len, patch_len, stride, padding_patch, dropout=0.1):
-        super(Network, self).__init__()
+from layers.ema import EMA
+from layers.dema import DEMA
 
-        # params
-        self.pred_len = pred_len
-        self.seq_len = seq_len
-        self.patch_len = patch_len
-        self.stride = stride
-        self.padding_patch = padding_patch
+class MultiScaleDecompose(nn.Module):
+    """
+    Multi-scale learnable decomposition.
+    Given input x shape [B, L, C] (same as project convention [Batch, Input, Channel]),
+    returns seasonal, trend, cyclic, irregular each with same shape.
+    Uses three odd kernel sizes (long, med, short) to produce multiscale smoothers.
+    """
+    def __init__(self, kernel_sizes=(101, 31, 7)):
+        super(MultiScaleDecompose, self).__init__()
+        assert len(kernel_sizes) == 3, "Expect three kernel sizes (long, med, short)"
+        for k in kernel_sizes:
+            assert k % 2 == 1, "kernel sizes must be odd"
+        self.k_long, self.k_med, self.k_short = kernel_sizes
 
-        # feature dim per patch (kept quadratic as original design)
-        self.dim = patch_len * patch_len
+        # learnable logits for each kernel -> softmax to get normalized smoothing kernel
+        self.logits_long = nn.Parameter(torch.randn(self.k_long))
+        self.logits_med = nn.Parameter(torch.randn(self.k_med))
+        self.logits_short = nn.Parameter(torch.randn(self.k_short))
 
-        # computed patch count (kept fixed from init seq_len)
-        self.patch_num = (seq_len - patch_len) // stride + 1
+    def _smooth(self, x_flat, logits, k):
+        # x_flat: [N, L]
+        w = F.softmax(logits, dim=0).view(1, 1, k).to(x_flat.dtype).to(x_flat.device)
+        x_in = x_flat.unsqueeze(1)  # [N,1,L]
+        pad = k // 2
+        out = F.conv1d(x_in, w, padding=pad)  # [N,1,L]
+        return out.squeeze(1)  # [N, L]
 
-        # --- Patch embedding (non-linear stream) ---
-        self.patch_fc = nn.Linear(patch_len, self.dim)
-        self.act = nn.SiLU()
-        self.ln_patch = nn.LayerNorm(self.dim)
-        self.drop = nn.Dropout(dropout)
+    def forward(self, x):
+        # expect x: [B, Input, Channel]
+        if x.dim() != 3:
+            raise ValueError("MultiScaleDecompose expects input shape [B, Input, Channel]")
 
-        # Depthwise conv on feature dim (groups=self.dim) + pointwise conv
-        # Conv1d expects [N, C, L] where C = feature dim
-        self.dw_conv = nn.Conv1d(self.dim, self.dim, kernel_size=3, padding=1, groups=self.dim)
-        self.gn_dw = nn.GroupNorm(1, self.dim)
-        self.pw_conv = nn.Conv1d(self.dim, self.dim, kernel_size=1)
-        self.gn_pw = nn.GroupNorm(1, self.dim)
+        B, L, C = x.shape
+        # reshape to [B*C, L] for per-channel independent smoothing
+        x_perm = x.permute(0,2,1).reshape(B * C, L)  # [N, L]
 
-        # small post conv LayerNorm (applied on last dim)
-        self.post_ln = nn.LayerNorm(self.dim)
+        s_long = self._smooth(x_perm, self.logits_long, self.k_long)
+        s_med = self._smooth(x_perm, self.logits_med, self.k_med)
+        s_short = self._smooth(x_perm, self.logits_short, self.k_short)
 
-        # residual projection (same shape so easy add) + small learnable scale
-        self.res_proj = nn.Linear(self.dim, self.dim)
-        self.res_scale = nn.Parameter(torch.tensor(0.5))
+        # components in flattened domain
+        trend_flat = s_long
+        cyclic_flat = s_med - s_long
+        seasonal_flat = s_short - s_med
+        irregular_flat = x_perm - s_short
 
-        # flatten head to predict pred_len
-        self.flatten = nn.Flatten(start_dim=-2)
-        self.head_fc1 = nn.Linear(self.patch_num * self.dim, pred_len * 2)
-        self.head_act = nn.SiLU()
-        self.head_fc2 = nn.Linear(pred_len * 2, pred_len)
+        # reshape back to [B, L, C]
+        def restore(z):
+            return z.reshape(B, C, L).permute(0,2,1)  # [B, L, C]
 
-        # --- Linear stream (stable MLP) ---
-        hidden = max(self.seq_len, pred_len * 2)
-        self.t_ln = nn.LayerNorm(self.seq_len)
-        self.linear_mlp = nn.Sequential(
-            nn.Linear(self.seq_len, hidden),
-            nn.SiLU(),
-            nn.LayerNorm(hidden),
-            nn.Dropout(dropout),
-            nn.Linear(hidden, pred_len)
-        )
-        self.linear_skip = nn.Linear(self.seq_len, pred_len)
+        seasonal = restore(seasonal_flat)
+        trend = restore(trend_flat)
+        cyclic = restore(cyclic_flat)
+        irregular = restore(irregular_flat)
 
-        # combine streams
-        self.combine = nn.Linear(pred_len * 2, pred_len)
+        return seasonal, trend, cyclic, irregular
 
-        # init
-        self._reset_parameters()
+class DECOMP(nn.Module):
+    """
+    Series decomposition block
+    """
+    def __init__(self, ma_type, alpha, beta, learn_kernels=(101,31,7)):
+        super(DECOMP, self).__init__()
+        self.ma_type = ma_type
+        if ma_type == 'ema':
+            self.ma = EMA(alpha)
+        elif ma_type == 'dema':
+            self.ma = DEMA(alpha, beta)
+        elif ma_type == 'learn':
+            self.ma = MultiScaleDecompose(kernel_sizes=learn_kernels)
 
-    def _reset_parameters(self):
-        for m in self.modules():
-            if isinstance(m, (nn.Linear, nn.Conv1d)):
-                nn.init.kaiming_uniform_(m.weight, a=math.sqrt(5))
-                if getattr(m, "bias", None) is not None:
-                    nn.init.zeros_(m.bias)
-
-    def forward(self, s, t, c=None, r=None):
-        # inputs: s,t: [B, Input, Channel]
-        if c is not None:
-            s = s + c
-        if r is not None:
-            t = t + r
-
-        # to [B, C, I]
-        s = s.permute(0, 2, 1)
-        t = t.permute(0, 2, 1)
-
-        # merge batch and channel for channel-independent processing
-        B, C, I = s.shape
-        s = s.reshape(B * C, I)  # [N, I]
-        t = t.reshape(B * C, I)  # [N, I]
-
-        # --- Non-linear stream: patching ---
-        if self.padding_patch == 'end':
-            expected_total = self.patch_num * self.stride + self.patch_len - self.stride
-            pad_needed = max(0, expected_total - I)
-            if pad_needed > 0:
-                s = F.pad(s, (0, pad_needed), mode='replicate')
-
-        s = s.unfold(dimension=-1, size=self.patch_len, step=self.stride).contiguous()
-        if s.shape[1] != self.patch_num:
-            raise RuntimeError(f"runtime patch_num {s.shape[1]} != init patch_num {self.patch_num}")
-
-        # patch embedding (applies to last dim)
-        s = self.patch_fc(s)             # [N, patch_num, dim]
-        s = self.act(s)
-        s = self.ln_patch(s)
-        s = self.drop(s)
-
-        res = s.clone()
-
-        # prepare for conv: [N, dim, patch_num]
-        s = s.permute(0, 2, 1).contiguous()
-        s = self.dw_conv(s)
-        s = self.gn_dw(s)
-        s = self.act(s)
-
-        s = self.pw_conv(s)
-        s = self.gn_pw(s)
-        s = self.act(s)
-
-        # back to [N, patch_num, dim]
-        s = s.permute(0, 2, 1).contiguous()
-        s = self.post_ln(s)
-
-        # residual projection and scaled add
-        res = self.res_proj(res)
-        s = s + self.res_scale * res
-
-        # flatten head -> partial prediction
-        s = self.flatten(s)
-        s = self.head_fc1(s)
-        s = self.head_act(s)
-        s = self.head_fc2(s)  # [N, pred_len]
-
-        # --- Linear stream ---
-        t_norm = self.t_ln(t)
-        t_out = self.linear_mlp(t_norm) + self.linear_skip(t)  # [N, pred_len]
-
-        # --- Combine ---
-        x = torch.cat((s, t_out), dim=1)  # [N, pred_len*2]
-        x = self.combine(x)               # [N, pred_len]
-
-        # restore shapes [B, C, pred_len] -> [B, pred_len, C]
-        x = x.reshape(B, C, self.pred_len).permute(0, 2, 1)
-
-        return x
+    def forward(self, x):
+        if self.ma_type in ('ema', 'dema'):
+            moving_average = self.ma(x)
+            res = x - moving_average
+            return res, moving_average
+        else:  # 'learn'
+            seasonal, trend, cyclic, irregular = self.ma(x)
+            return seasonal, trend, cyclic, irregular
