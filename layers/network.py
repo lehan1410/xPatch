@@ -1,4 +1,4 @@
-
+# ...existing code...
 import torch
 from torch import nn
 
@@ -25,19 +25,35 @@ class Network(nn.Module):
         self.act1 = nn.GELU()
         self.bn1 = nn.BatchNorm1d(self.patch_num)
 
-        # Depthwise conv (local features per patch index)
+        # Depthwise conv (local features per patch index) - base
         self.conv1 = nn.Conv1d(self.patch_num, self.patch_num,
                                patch_len, patch_len, groups=self.patch_num)
         self.act2 = nn.GELU()
         self.bn2 = nn.BatchNorm1d(self.patch_num)
 
+        # --- Multi-scale / dilated depthwise convolutions (lightweight) ---
+        self.ms_conv_k3 = nn.Conv1d(self.patch_num, self.patch_num, kernel_size=3, padding=1, groups=self.patch_num)
+        self.ms_conv_d2 = nn.Conv1d(self.patch_num, self.patch_num, kernel_size=3, dilation=2, padding=2, groups=self.patch_num)
+        self.bn_ms = nn.BatchNorm1d(self.patch_num)
+        # ------------------------------------------------------------------
+
         # Residual projection back to patch length
         self.fc2 = nn.Linear(self.dim, patch_len)
 
-        # Pointwise conv to mix patch channels
+        # Pointwise conv to mix patch channels (local mixing along patch_idx)
         self.conv2 = nn.Conv1d(self.patch_num, self.patch_num, 1, 1)
         self.act3 = nn.GELU()
         self.bn3 = nn.BatchNorm1d(self.patch_num)
+
+        # ---------------- Cross-channel mixing (learn multi-variate deps) ----------------
+        # channel_mixer operates across patch-channel axis; small bottleneck to limit params
+        cm_hidden = max(16, self.patch_num // 2)
+        self.channel_mixer = nn.Sequential(
+            nn.Linear(self.patch_num, cm_hidden),
+            nn.GELU(),
+            nn.Linear(cm_hidden, self.patch_num)
+        )
+        # ----------------------------------------------------------------------------------
 
         # Flatten & complex head (seasonal part)
         self.flatten1 = nn.Flatten(start_dim=-2)
@@ -117,20 +133,35 @@ class Network(nn.Module):
         s_e = self.act1(s_e)
         s_e = self.bn1(s_e)
 
-        res = s_e
-        s_e = self.conv1(s_e)         # depthwise conv
-        s_e = self.act2(s_e)
-        s_e = self.bn2(s_e)
+        # base depthwise conv
+        s_base = self.conv1(s_e)      # [N, patch_num, dim]
+        s_base = self.act2(s_base)
+        s_base = self.bn2(s_base)
 
-        # residual projection
-        res = self.fc2(res)
-        s_e = s_e + res
+        # multi-scale / dilated depthwise convs (lightweight)
+        s_ms1 = self.ms_conv_k3(s_e)  # local small kernel
+        s_ms2 = self.ms_conv_d2(s_e)  # dilated kernel for longer context
+        s_ms = s_base + s_ms1 + s_ms2
+        s_ms = self.bn_ms(s_ms)
 
-        s_e = self.conv2(s_e)
-        s_e = self.act3(s_e)
-        s_e = self.bn3(s_e)
+        # residual projection and add
+        res = self.fc2(s_e)
+        s_ms = s_ms + res
 
-        s_flat = self.flatten1(s_e)   # [N, patch_num * patch_len]
+        # pointwise mixing (per-patch mixing)
+        s_ms = self.conv2(s_ms)
+        s_ms = self.act3(s_ms)
+        s_ms = self.bn3(s_ms)
+
+        # cross-channel mixing: move patch-channel to last dim, apply mixer per time-step
+        # current s_ms: [N, patch_num, dim] -> transpose to [N, dim, patch_num]
+        s_mix = s_ms.transpose(1, 2)            # [N, dim, patch_num]
+        # apply same MLP to last dim; nn.Linear supports broadcasting over leading dims
+        s_mix = self.channel_mixer(s_mix)       # [N, dim, patch_num]
+        s_ms = s_mix.transpose(1, 2)            # [N, patch_num, dim]
+
+        # flatten and seasonal complex head
+        s_flat = self.flatten1(s_ms)   # [N, patch_num * patch_len]
         s_flat = self.fc3(s_flat)
         s_flat = self.act4(s_flat)
         s_complex = self.fc4(s_flat)  # [N, pred_len]
@@ -164,3 +195,4 @@ class Network(nn.Module):
         # reshape back to [B, pred_len, C]
         out = out.reshape(B, C, self.pred_len).permute(0,2,1)
         return out
+# ...existing code...
