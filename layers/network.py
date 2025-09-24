@@ -60,7 +60,7 @@ class Network(nn.Module):
         self.fc3 = nn.Linear(self.patch_num * patch_len, pred_len * 2)
         self.glu = nn.GLU(dim=-1)
         self.gelu4 = nn.GELU()
-        self.fc4 = nn.Linear(pred_len * 2, pred_len)
+        self.fc4 = nn.Linear(pred_len, pred_len)
         self.highway_s = HighwayConnection(pred_len)
 
         # Linear Stream
