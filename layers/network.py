@@ -42,10 +42,10 @@ class Network(nn.Module):
         self.flatten1 = nn.Flatten(start_dim=-2)
         self.fc3 = nn.Linear(self.patch_num * patch_len, pred_len * 2)
         self.gelu4 = nn.GELU()
-        # GLU removed here to keep deterministic dims; final fc4 matches GLU-aware shape
+        # final seasonal complex head (compatible with GLU removal)
         self.fc4 = nn.Linear(pred_len * 2, pred_len)
 
-        # Linear Stream (trend / simple path)
+        # Linear Stream (trend / complex path)
         self.fc5 = nn.Linear(seq_len, pred_len * 4)
         self.avgpool1 = nn.AvgPool1d(kernel_size=2)
         self.ln1 = nn.LayerNorm(pred_len * 2)
@@ -56,13 +56,21 @@ class Network(nn.Module):
 
         self.fc7 = nn.Linear(pred_len // 2, pred_len)
 
-        # --- New: simple baseline and gating to adapt complexity ---
-        # simple linear baseline per channel (fast, good for simple datasets)
+        # --- Baselines & gates to adapt complexity (avoid harming simple datasets) ---
+        # simple linear baseline for trend (t)
         self.simple_baseline = nn.Linear(seq_len, pred_len)
+        # small linear baselines for cyclic and irregular when provided
+        self.simple_baseline_c = nn.Linear(seq_len, pred_len)
+        self.simple_baseline_r = nn.Linear(seq_len, pred_len)
+
         # gate that learns how to combine complex vs baseline (per output step)
         self.gate_fc = nn.Linear(pred_len * 2, pred_len)
         self.sigmoid = nn.Sigmoid()
         self.dropout = nn.Dropout(p=0.1)
+
+        # learnable residual weights for c,r contributions (per output)
+        self.alpha_c = nn.Parameter(torch.zeros(pred_len))
+        self.alpha_r = nn.Parameter(torch.zeros(pred_len))
         # ----------------------------------------------------------------
 
         # Streams Concatination (complex s+t path -> pred_len, then will be gated)
@@ -70,15 +78,13 @@ class Network(nn.Module):
 
     def forward(self, s, t, c=None, r=None):
         # x: [Batch, Input, Channel]
-        # s - seasonality
-        # t - trend
+        # s - seasonality, t - trend
+        # c, r optional — NOT added directly into s/t
 
-        if c is not None:
-            s = s + c
-        # If irregular provided, merge into trend/linear stream as residual
-        if r is not None:
-            t = t + r
-        
+        # keep originals for separate baseline processing
+        c_in = c
+        r_in = r
+
         s = s.permute(0,2,1) # to [Batch, Channel, Input]
         t = t.permute(0,2,1) # to [Batch, Channel, Input]
         
@@ -86,72 +92,89 @@ class Network(nn.Module):
         B = s.shape[0] # Batch size
         C = s.shape[1] # Channel size
         I = s.shape[2] # Input size
-        s = torch.reshape(s, (B*C, I)) # [Batch and Channel, Input]
-        t = torch.reshape(t, (B*C, I)) # [Batch and Channel, Input]
+        s = torch.reshape(s, (B*C, I)) # [N, seq_len]
+        t = torch.reshape(t, (B*C, I)) # [N, seq_len]
 
-        # Keep copy of raw input for simple baseline
+        # Keep copy of raw input for simple baseline (trend)
         t_raw = t  # [N, seq_len]
+        baseline_t = self.simple_baseline(t_raw)   # [N, pred_len]
 
-        # Non-linear Stream
+        # Baselines for c and r (if provided)
+        if c_in is not None:
+            c_tmp = c_in.permute(0,2,1).reshape(B*C, I)
+            baseline_c = self.simple_baseline_c(c_tmp)
+        else:
+            baseline_c = torch.zeros_like(baseline_t, device=baseline_t.device)
+
+        if r_in is not None:
+            r_tmp = r_in.permute(0,2,1).reshape(B*C, I)
+            baseline_r = self.simple_baseline_r(r_tmp)
+        else:
+            baseline_r = torch.zeros_like(baseline_t, device=baseline_t.device)
+
+        # ----------------- complex non-linear seasonal stream -----------------
         # Patching
         if self.padding_patch == 'end':
-            s = self.padding_patch_layer(s)
-        s = s.unfold(dimension=-1, size=self.patch_len, step=self.stride)
-        # s: [Batch and Channel, Patch_num, Patch_len]
-        
-        # Patch Embedding
-        s = self.fc1(s)
-        s = self.gelu1(s)
-        s = self.bn1(s)
+            s_pad = self.padding_patch_layer(s)
+        else:
+            s_pad = s
+        s_unf = s_pad.unfold(dimension=-1, size=self.patch_len, step=self.stride)
+        # s_unf: [N, Patch_num, Patch_len]
 
-        res = s
+        # Patch Embedding
+        s_e = self.fc1(s_unf)
+        s_e = self.gelu1(s_e)
+        s_e = self.bn1(s_e)
+
+        res = s_e
 
         # CNN Depthwise
-        s = self.conv1(s)
-        s = self.gelu2(s)
-        s = self.bn2(s)
+        s_e = self.conv1(s_e)
+        s_e = self.gelu2(s_e)
+        s_e = self.bn2(s_e)
 
         # Residual Stream
         res = self.fc2(res)
-        s = s + res
+        s_e = s_e + res
 
         # CNN Pointwise
-        s = self.conv2(s)
-        s = self.gelu3(s)
-        s = self.bn3(s)
+        s_e = self.conv2(s_e)
+        s_e = self.gelu3(s_e)
+        s_e = self.bn3(s_e)
 
-        # Flatten Head
-        s = self.flatten1(s)
-        s = self.fc3(s)
-        s = self.gelu4(s)
-        s = self.fc4(s)               # complex seasonal output part -> shape [N, pred_len]
+        # Flatten Head -> complex seasonal part
+        s_flat = self.flatten1(s_e)
+        s_flat = self.fc3(s_flat)
+        s_flat = self.gelu4(s_flat)
+        s_complex = self.fc4(s_flat)               # [N, pred_len]
 
-        # Linear Stream (complex trend processing)
+        # ----------------- complex trend stream -----------------
         t_cpx = self.fc5(t)
-        t_cpx = self.avgpool1(t_cpx)
+        # avgpool1 expects [N, C, L], but here fc5 returns [N, pred_len*4]; keep compatible:
+        # use unsqueeze/avgpool then squeeze (same as original design)
+        t_cpx = self.avgpool1(t_cpx.unsqueeze(1)).squeeze(1)
         t_cpx = self.ln1(t_cpx)
 
         t_cpx = self.fc6(t_cpx)
-        t_cpx = self.avgpool2(t_cpx)
+        t_cpx = self.avgpool2(t_cpx.unsqueeze(1)).squeeze(1)
         t_cpx = self.ln2(t_cpx)
 
         t_cpx = self.fc7(t_cpx)       # shape [N, pred_len]
 
         # Streams Concatination (complex)
-        complex_out = torch.cat((s, t_cpx), dim=1)   # [N, pred_len*2]
+        complex_out = torch.cat((s_complex, t_cpx), dim=1)   # [N, pred_len*2]
         complex_out = self.dropout(complex_out)
         complex_out_proj = self.fc8(complex_out)     # [N, pred_len]
 
-        # Simple baseline (fast linear mapping)
-        baseline = self.simple_baseline(t_raw)       # [N, pred_len]
-        baseline = self.dropout(baseline)
+        # Adaptive gating between complex path and baseline trend
+        gate_input = torch.cat((complex_out_proj, baseline_t), dim=1)  # [N, pred_len*2]
+        gate = self.sigmoid(self.gate_fc(gate_input))                  # [N, pred_len]
+        out = gate * complex_out_proj + (1.0 - gate) * baseline_t      # [N, pred_len]
 
-        # Gate: decide per-output linear combination between complex and baseline
-        gate_input = torch.cat((complex_out_proj, baseline), dim=1)  # [N, pred_len*2]
-        gate = self.sigmoid(self.gate_fc(gate_input))                # [N, pred_len]
-
-        # Final adaptive blend (allows model to fallback to baseline for simple datasets)
-        out = gate * complex_out_proj + (1.0 - gate) * baseline     # [N, pred_len]
+        # Add contributions from c and r as learnable residuals (if present)
+        alpha_c = torch.sigmoid(self.alpha_c).unsqueeze(0)  # [1, pred_len]
+        alpha_r = torch.sigmoid(self.alpha_r).unsqueeze(0)
+        out = out + alpha_c * baseline_c + alpha_r * baseline_r
 
         # Reshape back
         x = out.reshape(B, C, self.pred_len) # [Batch, Channel, Output]
