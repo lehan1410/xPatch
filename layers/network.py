@@ -1,138 +1,140 @@
 import torch
+import torch.nn.functional as F
 from torch import nn
 
 class Network(nn.Module):
-    def __init__(self, seq_len, pred_len, patch_len, stride, padding_patch):
+    def __init__(self, seq_len, pred_len, patch_len, stride, padding_patch, dropout=0.1):
         super(Network, self).__init__()
 
         # Parameters
         self.pred_len = pred_len
+        self.seq_len = seq_len
 
-        # Non-linear Stream
-        # Patching
+        # Non-linear Stream / patching params
         self.patch_len = patch_len
         self.stride = stride
         self.padding_patch = padding_patch
+
+        # feature dim per patch
         self.dim = patch_len * patch_len
-        self.patch_num = (seq_len - patch_len)//stride + 1
-        if padding_patch == 'end': # can be modified to general case
-            self.padding_patch_layer = nn.ReplicationPad1d((0, stride)) 
-            self.patch_num += 1
+
+        # compute expected number of patches
+        self.patch_num = (seq_len - patch_len) // stride + 1
 
         # Patch Embedding
         self.fc1 = nn.Linear(patch_len, self.dim)
-        self.gelu1 = nn.GELU()
-        self.bn1 = nn.BatchNorm1d(self.patch_num)
-        
-        # CNN Depthwise
-        self.conv1 = nn.Conv1d(self.patch_num, self.patch_num,
-                               patch_len, patch_len, groups=self.patch_num)
-        self.gelu2 = nn.GELU()
-        self.bn2 = nn.BatchNorm1d(self.patch_num)
+        self.act = nn.SiLU()
+        self.ln_embed = nn.LayerNorm(self.dim)
+        self.drop = nn.Dropout(dropout)
 
-        # Residual Stream
-        self.fc2 = nn.Linear(self.dim, patch_len)
+        # Depthwise (per-feature) conv + pointwise conv
+        # operate on feature dim as channels: Conv1d expects [N, C, L]
+        self.conv1 = nn.Conv1d(self.dim, self.dim, kernel_size=3, padding=1, groups=self.dim)
+        self.conv2 = nn.Conv1d(self.dim, self.dim, kernel_size=1)
+        self.post_ln = nn.LayerNorm(self.dim)
 
-        # CNN Pointwise
-        self.conv2 = nn.Conv1d(self.patch_num, self.patch_num, 1, 1)
-        self.gelu3 = nn.GELU()
-        self.bn3 = nn.BatchNorm1d(self.patch_num)
+        # Residual projection (keep same dim)
+        self.fc2 = nn.Linear(self.dim, self.dim)
+        self.res_scale = nn.Parameter(torch.tensor(0.5))
 
         # Flatten Head
         self.flatten1 = nn.Flatten(start_dim=-2)
-        self.fc3 = nn.Linear(self.patch_num * patch_len, pred_len * 2)
-        self.gelu4 = nn.GELU()
+        self.fc3 = nn.Linear(self.patch_num * self.dim, pred_len * 2)
+        self.act2 = nn.SiLU()
         self.fc4 = nn.Linear(pred_len * 2, pred_len)
 
-        # Linear Stream
-        # MLP
-        self.fc5 = nn.Linear(seq_len, pred_len * 4)
-        self.avgpool1 = nn.AvgPool1d(kernel_size=2)
-        self.ln1 = nn.LayerNorm(pred_len * 2)
+        # Linear Stream: stable MLP with LayerNorm + SiLU + skip
+        hidden = max(self.seq_len, pred_len * 2)
+        self.t_ln = nn.LayerNorm(self.seq_len)
+        self.linear_mlp = nn.Sequential(
+            nn.Linear(self.seq_len, hidden),
+            nn.SiLU(),
+            nn.LayerNorm(hidden),
+            nn.Dropout(dropout),
+            nn.Linear(hidden, pred_len)
+        )
+        self.linear_skip = nn.Linear(self.seq_len, pred_len)
 
-        self.fc6 = nn.Linear(pred_len * 2, pred_len)
-        self.avgpool2 = nn.AvgPool1d(kernel_size=2)
-        self.ln2 = nn.LayerNorm(pred_len // 2)
-
-        self.fc7 = nn.Linear(pred_len // 2, pred_len)
-
-        # Streams Concatination
+        # Streams Concatenation
         self.fc8 = nn.Linear(pred_len * 2, pred_len)
 
-    def forward(self, s, t, c=None, r=None):
-        # x: [Batch, Input, Channel]
-        # s - seasonality
-        # t - trend
+        # init
+        self._reset_parameters()
 
+    def _reset_parameters(self):
+        for m in self.modules():
+            if isinstance(m, nn.Linear) or isinstance(m, nn.Conv1d):
+                nn.init.kaiming_uniform_(m.weight, a=math.sqrt(5)) if hasattr(nn.init, 'kaiming_uniform_') else None
+                if getattr(m, 'bias', None) is not None:
+                    nn.init.zeros_(m.bias)
+
+    def forward(self, s, t, c=None, r=None):
+        # s,t: [Batch, Input, Channel]
         if c is not None:
             s = s + c
-        # If irregular provided, merge into trend/linear stream as residual
         if r is not None:
             t = t + r
-        
-        s = s.permute(0,2,1) # to [Batch, Channel, Input]
-        t = t.permute(0,2,1) # to [Batch, Channel, Input]
-        
-        # Channel split for channel independence
-        B = s.shape[0] # Batch size
-        C = s.shape[1] # Channel size
-        I = s.shape[2] # Input size
-        s = torch.reshape(s, (B*C, I)) # [Batch and Channel, Input]
-        t = torch.reshape(t, (B*C, I)) # [Batch and Channel, Input]
 
-        # Non-linear Stream
-        # Patching
+        # to [Batch, Channel, Input]
+        s = s.permute(0, 2, 1)
+        t = t.permute(0, 2, 1)
+
+        # merge batch and channel
+        B = s.shape[0]
+        C = s.shape[1]
+        I = s.shape[2]
+        s = torch.reshape(s, (B * C, I))
+        t = torch.reshape(t, (B * C, I))
+
+        # --- Non-linear stream: patching ---
         if self.padding_patch == 'end':
-            s = self.padding_patch_layer(s)
-        s = s.unfold(dimension=-1, size=self.patch_len, step=self.stride)
-        # s: [Batch and Channel, Patch_num, Patch_len]
-        
-        # Patch Embedding
-        s = self.fc1(s)
-        s = self.gelu1(s)
-        s = self.bn1(s)
+            expected_total = self.patch_num * self.stride + self.patch_len - self.stride
+            pad_needed = max(0, expected_total - I)
+            if pad_needed > 0:
+                s = F.pad(s, (0, pad_needed), mode='replicate')
 
-        res = s
+        s = s.unfold(dimension=-1, size=self.patch_len, step=self.stride).contiguous()
+        if s.shape[1] != self.patch_num:
+            raise RuntimeError(f"runtime patch_num {s.shape[1]} != init patch_num {self.patch_num}")
 
-        # CNN Depthwise
+        # Patch embedding
+        s = self.fc1(s)               # [B*C, patch_num, dim]
+        s = self.act(s)
+        s = self.ln_embed(s)
+        s = self.drop(s)
+
+        res = s                       # residual
+
+        # conv expects [N, C, L] where C = dim
+        s = s.permute(0, 2, 1).contiguous()  # [B*C, dim, patch_num]
         s = self.conv1(s)
-        s = self.gelu2(s)
-        s = self.bn2(s)
-
-        # Residual Stream
-        res = self.fc2(res)
-        s = s + res
-
-        # CNN Pointwise
+        s = self.act(s)
         s = self.conv2(s)
-        s = self.gelu3(s)
-        s = self.bn3(s)
+        s = self.act(s)
+        s = s.permute(0, 2, 1).contiguous()   # [B*C, patch_num, dim]
 
-        # Flatten Head
+        s = self.post_ln(s)
+
+        # residual projection with scale
+        res = self.fc2(res)
+        s = s + self.res_scale * res
+
+        # Flatten head
         s = self.flatten1(s)
         s = self.fc3(s)
-        s = self.gelu4(s)
-        s = self.fc4(s)
+        s = self.act2(s)
+        s = self.fc4(s)   # [B*C, pred_len]
 
-        # Linear Stream
-        # MLP
-        t = self.fc5(t)
-        t = self.avgpool1(t)
-        t = self.ln1(t)
+        # --- Linear stream ---
+        t_norm = self.t_ln(t)
+        t_out = self.linear_mlp(t_norm) + self.linear_skip(t)
 
-        t = self.fc6(t)
-        t = self.avgpool2(t)
-        t = self.ln2(t)
-
-        t = self.fc7(t)
-
-        # Streams Concatination
-        x = torch.cat((s, t), dim=1)
+        # --- Combine ---
+        x = torch.cat((s, t_out), dim=1)
         x = self.fc8(x)
 
-        # Channel concatination
-        x = torch.reshape(x, (B, C, self.pred_len)) # [Batch, Channel, Output]
-
-        x = x.permute(0,2,1) # to [Batch, Output, Channel]
+        # restore shapes
+        x = torch.reshape(x, (B, C, self.pred_len))
+        x = x.permute(0, 2, 1)
 
         return x
