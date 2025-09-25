@@ -43,7 +43,7 @@ parser.add_argument('--pred_len', type=int, default=96, help='prediction sequenc
 parser.add_argument('--enc_in', type=int, default=7, help='encoder input size')
 
 # Patching
-parser.add_argument('--patch_len', type=int, default=16, help='patch length')
+parser.add_argument('--patch_len', type=int, default=48, help='patch length')
 parser.add_argument('--stride', type=int, default=8, help='stride')
 parser.add_argument('--padding_patch', default='end', help='None: None; end: padding on the end')
 

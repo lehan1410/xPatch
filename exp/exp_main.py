@@ -15,24 +15,6 @@ import math
 
 warnings.filterwarnings('ignore')
 
-from ptflops import get_model_complexity_info
-
-def print_model_stats(model, args):
-    total_params = sum(p.numel() for p in model.parameters())
-    print(f'Total parameters: {total_params}')
-
-    input_shape = (args.seq_len, args.input_dim) if hasattr(args, 'input_dim') else (args.seq_len, 1)
-    macs, params = get_model_complexity_info(model, input_shape, as_strings=True, print_per_layer_stat=False)
-    print(f'MACs: {macs}')
-
-    if torch.cuda.is_available():
-        torch.cuda.reset_peak_memory_stats()
-        dummy_input = torch.randn(1, *input_shape).to(next(model.parameters()).device)
-        with torch.no_grad():
-            _ = model(dummy_input)
-        max_mem = torch.cuda.max_memory_allocated() / (1024 ** 2)
-        print(f'Max Memory Allocated: {max_mem:.2f} MB')
-
 class Exp_Main(Exp_Basic):
     def __init__(self, args):
         super(Exp_Main, self).__init__(args)
@@ -45,7 +27,6 @@ class Exp_Main(Exp_Basic):
 
         if self.args.use_multi_gpu and self.args.use_gpu:
             model = nn.DataParallel(model, device_ids=self.args.device_ids)
-        print_model_stats(model, self.args)
         return model
 
     def _get_data(self, flag):

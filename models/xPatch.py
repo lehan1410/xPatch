@@ -16,6 +16,8 @@ class Model(nn.Module):
         seq_len = configs.seq_len   # lookback window L
         pred_len = configs.pred_len # prediction length (96, 192, 336, 720)
         c_in = configs.enc_in       # input channels
+        period_len = 24
+
 
         # Patching
         patch_len = configs.patch_len
@@ -30,11 +32,9 @@ class Model(nn.Module):
         self.ma_type = configs.ma_type
         alpha = configs.alpha       # smoothing factor for EMA (Exponential Moving Average)
         beta = configs.beta         # smoothing factor for DEMA (Double Exponential Moving Average)
-            
-        learn_kernels = getattr(configs, "learn_kernels", (101,31,7))
 
-        self.decomp = DECOMP(self.ma_type, alpha, beta, learn_kernels)
-        self.net = Network(configs)
+        self.decomp = DECOMP(self.ma_type, alpha, beta)
+        self.net = Network(seq_len, pred_len, patch_len, stride, padding_patch, period_len, c_in)
         # self.net_mlp = NetworkMLP(seq_len, pred_len) # For ablation study with MLP-only stream
         # self.net_cnn = NetworkCNN(seq_len, pred_len, patch_len, stride, padding_patch) # For ablation study with CNN-only stream
 
@@ -49,12 +49,9 @@ class Model(nn.Module):
             x = self.net(x, x)
             # x = self.net_mlp(x) # For ablation study with MLP-only stream
             # x = self.net_cnn(x) # For ablation study with CNN-only stream
-        elif self.ma_type in ('ema', 'dema'):
+        else:
             seasonal_init, trend_init = self.decomp(x)
-            x = self.net(seasonal_init)
-        elif self.ma_type == 'learn':
-            seasonal_init, trend_init, cyclic_init, irregular_init = self.decomp(x)
-            x = self.net(seasonal_init, trend_init, cyclic_init, irregular_init)
+            x = self.net(seasonal_init, trend_init)
 
         # Denormalization
         if self.revin:
