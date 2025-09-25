@@ -48,7 +48,7 @@ class Model(nn.Module):
         self.fc4 = nn.Linear(self.seq_len, self.seq_len)
 
         # Downsampling (aggregation theo period_len)
-        self.conv1 = nn.Conv1d(self.d_model, self.d_model, self.patch_len, self.patch_len, groups=self.d_model)
+        self.dow = nn.Conv1d(self.d_model, self.d_model, self.patch_len, self.patch_len, groups=self.d_model)
 
         self.mlp = nn.Sequential(
             nn.Linear(self.seq_len // self.period_len, self.d_model),
@@ -112,7 +112,7 @@ class Model(nn.Module):
 
         # Downsampling theo period_len
         x = x.reshape(-1, 1, self.seq_len)
-        x = self.conv1d(x).reshape(-1, self.enc_in, self.seq_len) + x.reshape(-1, self.enc_in, self.seq_len)
+        x = self.dow(x).reshape(-1, self.enc_in, self.seq_len) + x.reshape(-1, self.enc_in, self.seq_len)
 
         # downsampling: b,c,s -> bc,n,w -> bc,w,n
         seg_num_x = self.seq_len // self.period_len
