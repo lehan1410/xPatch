@@ -8,8 +8,7 @@ class Network(nn.Module):
         # Parameters
         self.pred_len = pred_len
         self.seq_len = seq_len
-        self.seg_num_x = self.seq_len // self.period_len
-        self.seg_num_y = self.pred_len // self.period_len
+        self.period_len = period_len
         self.d_model = 108
 
         # Non-linear Stream
@@ -17,7 +16,7 @@ class Network(nn.Module):
         self.patch_len = patch_len
         self.stride = stride
         self.padding_patch = padding_patch
-        self.period_len = period_len
+        
         self.dim = patch_len
         self.patch_num = (seq_len - patch_len)//stride + 1
         if padding_patch == 'end': # can be modified to general case
