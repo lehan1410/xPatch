@@ -12,9 +12,25 @@ import os
 import time
 import warnings
 import math
-
+import torch
 warnings.filterwarnings('ignore')
 
+def count_parameters(model):
+    # Nếu dùng DataParallel, truy cập model.module
+    if isinstance(model, nn.DataParallel):
+        model = model.module
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+def get_model_memory(model, input_shape, device='cuda'):
+    # Nếu dùng DataParallel, truy cập model.module
+    if isinstance(model, nn.DataParallel):
+        model = model.module
+    dummy_input = torch.randn(*input_shape).to(device)
+    with torch.no_grad():
+        torch.cuda.reset_peak_memory_stats(device)
+        _ = model(dummy_input)
+        mem = torch.cuda.max_memory_allocated(device) / (1024 ** 2)  # MB
+    return mem
 class Exp_Main(Exp_Basic):
     def __init__(self, args):
         super(Exp_Main, self).__init__(args)
@@ -215,6 +231,14 @@ class Exp_Main(Exp_Basic):
         best_model_path = path + '/' + 'checkpoint.pth'
         self.model.load_state_dict(torch.load(best_model_path))
         os.remove(best_model_path)
+
+        print(f"Total trainable parameters: {count_parameters(self.model)}")
+        if torch.cuda.is_available():
+            input_shape = (self.args.batch_size, self.args.seq_len, self.args.enc_in)
+            mem = get_model_memory(self.model, input_shape, device=self.device)
+            print(f"Peak GPU memory usage (forward only): {mem:.2f} MB")
+        else:
+            print("CUDA not available, cannot measure GPU memory.")
 
         return self.model
 

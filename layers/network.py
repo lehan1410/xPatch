@@ -9,6 +9,7 @@ class Network(nn.Module):
         self.pred_len = pred_len
         self.seq_len = seq_len
         self.period_len = period_len
+        self.enc_in = enc_in
         self.d_model = 108
 
         # Non-linear Stream
