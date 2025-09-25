@@ -31,7 +31,7 @@ class Model(nn.Module):
         # CNN Depthwise
         self.conv1 = nn.Conv1d(self.patch_num, self.patch_num, self.patch_len, self.patch_len, groups=self.patch_num)
         self.gelu2 = nn.GELU()
-        self.bn2 = nn.BatchNorm1d(self.patch_num)
+        self.bn2 = nn.BatchNorm1d(self.d_model)
 
         # Residual Stream
         self.fc2 = nn.Linear(self.d_model, self.patch_len)
