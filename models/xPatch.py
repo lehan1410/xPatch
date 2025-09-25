@@ -43,7 +43,7 @@ class Model(nn.Module):
 
         # Flatten Head
         self.flatten1 = nn.Flatten(start_dim=-2)
-        self.fc3 = nn.Linear(self.patch_num * self.patch_len, self.seq_len)
+        self.fc3 = nn.Linear(self.patch_num * self.d_model, self.seq_len)
         self.gelu4 = nn.GELU()
         self.fc4 = nn.Linear(self.seq_len, self.seq_len)
 
