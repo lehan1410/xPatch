@@ -29,7 +29,7 @@ class Model(nn.Module):
         self.bn1 = nn.BatchNorm1d(self.d_model)  
 
         # CNN Depthwise
-        self.conv1 = nn.Conv1d(self.patch_num, self.patch_num, self.patch_len, self.patch_len, groups=self.patch_num)
+        self.conv1 = nn.Conv1d(self.d_model, self.d_model, self.patch_len, self.patch_len, groups=self.d_model)
         self.gelu2 = nn.GELU()
         self.bn2 = nn.BatchNorm1d(self.d_model)
 
