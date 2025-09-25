@@ -111,7 +111,7 @@ class Model(nn.Module):
 
         # Downsampling theo period_len
         x = x.reshape(-1, self.enc_in, self.seq_len)
-        x = self.dow(x) + x 
+        x = self.dow(x) 
         # downsampling: b,c,s -> bc,n,w -> bc,w,n
         seg_num_x = self.seq_len // self.period_len
         seg_num_y = self.pred_len // self.period_len
