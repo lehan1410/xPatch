@@ -10,7 +10,7 @@ class Model(nn.Module):
         self.pred_len = configs.pred_len
         self.enc_in = configs.enc_in
         self.period_len = 24
-        self.d_model = configs.d_model
+        self.d_model = configs.108
         self.patch_len = configs.patch_len
         self.stride = configs.stride
         self.padding_patch = configs.padding_patch
