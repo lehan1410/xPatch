@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 
-class AnchorInterpolationModel(nn.Module):
+class Network(nn.Module):
     def __init__(self, configs):
         super().__init__()
         
@@ -10,12 +10,12 @@ class AnchorInterpolationModel(nn.Module):
         self.seq_len = configs.seq_len
         self.pred_len = configs.pred_len
         self.enc_in = configs.enc_in
-        self.period_len = configs.period_len
+        self.period_len = 24
         self.d_model = configs.d_model
         self.model_type = configs.model_type
         
         # Anchor parameters
-        self.num_anchors = configs.pred_len // configs.period_len  # Số lượng anchor points
+        self.num_anchors = configs.pred_len // 24  # Số lượng anchor points
         
         # Calculate segments
         self.seg_num_x = self.seq_len // self.period_len
