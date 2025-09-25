@@ -26,7 +26,7 @@ class Model(nn.Module):
         # Patch Embedding
         self.fc1 = nn.Linear(self.patch_len, self.d_model)
         self.gelu1 = nn.GELU()
-        self.bn1 = nn.BatchNorm1d(self.patch_num)
+        self.bn1 = nn.BatchNorm1d(self.d_model)  
 
         # CNN Depthwise
         self.conv1 = nn.Conv1d(self.patch_num, self.patch_num, self.patch_len, self.patch_len, groups=self.patch_num)
