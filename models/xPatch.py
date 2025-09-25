@@ -39,7 +39,7 @@ class Model(nn.Module):
         # CNN Pointwise
         self.conv2 = nn.Conv1d(self.d_model, self.d_model, 1, 1)
         self.gelu3 = nn.GELU()
-        self.bn3 = nn.BatchNorm1d(self.patch_num)
+        self.bn3 = nn.BatchNorm1d(self.d_model)
 
         # Flatten Head
         self.flatten1 = nn.Flatten(start_dim=-2)
