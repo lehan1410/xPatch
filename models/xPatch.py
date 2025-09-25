@@ -34,7 +34,7 @@ class Model(nn.Module):
         learn_kernels = getattr(configs, "learn_kernels", (101,31,7))
 
         self.decomp = DECOMP(self.ma_type, alpha, beta, learn_kernels)
-        self.net = Network(seq_len, pred_len, patch_len, stride, padding_patch)
+        self.net = Network(configs)
         # self.net_mlp = NetworkMLP(seq_len, pred_len) # For ablation study with MLP-only stream
         # self.net_cnn = NetworkCNN(seq_len, pred_len, patch_len, stride, padding_patch) # For ablation study with CNN-only stream
 
@@ -51,7 +51,7 @@ class Model(nn.Module):
             # x = self.net_cnn(x) # For ablation study with CNN-only stream
         elif self.ma_type in ('ema', 'dema'):
             seasonal_init, trend_init = self.decomp(x)
-            x = self.net(seasonal_init, trend_init)
+            x = self.net(seasonal_init)
         elif self.ma_type == 'learn':
             seasonal_init, trend_init, cyclic_init, irregular_init = self.decomp(x)
             x = self.net(seasonal_init, trend_init, cyclic_init, irregular_init)
