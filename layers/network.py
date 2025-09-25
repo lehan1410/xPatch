@@ -98,7 +98,7 @@ class Network(nn.Module):
         # Downsample từng patch
         patches = patches.unsqueeze(2) # [B*C, patch_num, 1, patch_len]
         patches = patches.reshape(-1, 1, self.patch_len) # [B*C*patch_num, 1, patch_len]
-        patches = self.patch_downsample(patches) # [B*C*patch_num, 1, patch_len//2]
+        patches = self.conv1d(patches) # [B*C*patch_num, 1, patch_len//2]
         patches = patches.squeeze(1)   # [B*C*patch_num, patch_len//2]
 
         # Patch embedding
