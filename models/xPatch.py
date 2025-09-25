@@ -37,7 +37,7 @@ class Model(nn.Module):
         self.fc2 = nn.Linear(self.d_model, self.patch_len)
 
         # CNN Pointwise
-        self.conv2 = nn.Conv1d(self.patch_num, self.patch_num, 1, 1)
+        self.conv2 = nn.Conv1d(self.d_model, self.d_model, 1, 1)
         self.gelu3 = nn.GELU()
         self.bn3 = nn.BatchNorm1d(self.patch_num)
 
