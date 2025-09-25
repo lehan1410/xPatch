@@ -80,26 +80,37 @@ class Model(nn.Module):
         # Patch Embedding + Local Feature Extraction
         x = self.fc1(x)
         x = self.gelu1(x)
+        # bn1 expects [B*C, patch_num, d_model] -> need to permute for BatchNorm1d
+        x = x.permute(0, 2, 1)  # [B*C, d_model, patch_num]
         x = self.bn1(x)
+        x = x.permute(0, 2, 1)  # [B*C, patch_num, d_model]
 
         res = x
 
         # CNN Depthwise
+        # Conv1d expects [B*C, patch_num, d_model] -> [B*C, d_model, patch_num]
+        x = x.permute(0, 2, 1)  # [B*C, d_model, patch_num]
         x = self.conv1(x)
         x = self.gelu2(x)
         x = self.bn2(x)
+        x = x.permute(0, 2, 1)  # [B*C, patch_num, d_model]
 
         # Residual Stream
-        res = self.fc2(res)
+        res = self.fc2(res)  # [B*C, patch_num, patch_len]
+        # Resize res to match x if needed
+        if res.shape[-1] != x.shape[-1]:
+            res = nn.functional.interpolate(res, size=x.shape[-1], mode='linear', align_corners=False)
         x = x + res
 
         # CNN Pointwise
+        x = x.permute(0, 2, 1)  # [B*C, d_model, patch_num]
         x = self.conv2(x)
         x = self.gelu3(x)
         x = self.bn3(x)
+        x = x.permute(0, 2, 1)  # [B*C, patch_num, d_model]
 
         # Flatten Head
-        x = self.flatten1(x)
+        x = self.flatten1(x)  # [B*C, patch_num * d_model]
         x = self.fc3(x)
         x = self.gelu4(x)
         x = self.fc4(x)
