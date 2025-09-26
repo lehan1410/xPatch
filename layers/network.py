@@ -40,12 +40,12 @@ class Network(nn.Module):
         t = t.permute(0, 2, 1)  # [Batch, Channel, Input]
 
         # Xử lý trực tiếp seasonal, KHÔNG cần trừ trend
-        seq_mean = torch.mean(s, dim=1).unsqueeze(1)
-        x = (s - seq_mean).permute(0, 2, 1)
-        x = self.conv1d(x.reshape(-1, 1, self.seq_len)).reshape(-1, self.enc_in, self.seq_len) + x
-
-        # downsampling: b,c,s -> bc,n,w -> bc,w,n
-        x = x.reshape(-1, self.seg_num_x, self.period_len).permute(0, 2, 1)
+        seq_mean = torch.mean(s, dim=1).unsqueeze(1)  # [Batch, 1, Input]
+        x = (s - seq_mean)  # [Batch, Channel, Input]
+        x = x.reshape(-1, 1, self.seq_len)  # [Batch*Channel, 1, seq_len]
+        conv_out = self.conv1d(x)  # [Batch*Channel, 1, seq_len]
+        x = conv_out + x  # [Batch*Channel, 1, seq_len]
+        x = x.reshape(batch_size, self.enc_in, self.seq_len)
 
         # sparse forecasting
         if self.model_type == 'linear':
