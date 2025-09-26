@@ -1,135 +1,58 @@
 import torch
 import torch.nn as nn
+import math
+
+from layers.decomp import DECOMP
+from layers.network import Network
+# from layers.network_mlp import NetworkMLP # For ablation study with MLP-only stream
+# from layers.network_cnn import NetworkCNN # For ablation study with CNN-only stream
 from layers.revin import RevIN
 
 class Model(nn.Module):
     def __init__(self, configs):
         super(Model, self).__init__()
 
-        self.seq_len = configs.seq_len
-        self.pred_len = configs.pred_len
-        self.enc_in = configs.enc_in
-        self.period_len = 24
-        self.d_model = 108
-        self.patch_len = configs.patch_len
-        self.stride = configs.stride
-        self.padding_patch = configs.padding_patch
-
-        self.patch_num = (self.seq_len - self.patch_len)//self.stride + 1
-        if self.padding_patch == 'end':
-            self.padding_patch_layer = nn.ReplicationPad1d((0, self.stride)) 
-            self.patch_num += 1
-
-        # RevIN layer
-        self.revin_layer = RevIN(self.enc_in, affine=True, subtract_last=False)
-
-        # Patch Embedding
-        self.fc1 = nn.Linear(self.patch_len, self.d_model)
-        self.gelu1 = nn.GELU()
-        self.bn1 = nn.BatchNorm1d(self.d_model)  
-
-        # CNN Depthwise
-        self.conv1 = nn.Conv1d(self.d_model, self.d_model, self.patch_len, self.patch_len, groups=self.d_model)
-        self.gelu2 = nn.GELU()
-        self.bn2 = nn.BatchNorm1d(self.d_model)
-
-        # Residual Stream
-        self.fc2 = nn.Linear(self.d_model, self.patch_len)
-
-        # CNN Pointwise
-        self.conv2 = nn.Conv1d(self.d_model, self.d_model, 1, 1)
-        self.gelu3 = nn.GELU()
-        self.bn3 = nn.BatchNorm1d(self.d_model)
-
-        # Flatten Head
-        self.flatten1 = nn.Flatten(start_dim=-2)
-        self.fc3 = nn.Linear(self.patch_num * self.d_model, self.seq_len)
-        self.gelu4 = nn.GELU()
-        self.fc4 = nn.Linear(self.seq_len, self.seq_len)
-
-        # Downsampling (aggregation theo period_len)
-        self.dow = nn.Conv1d(self.enc_in, self.enc_in, self.period_len, self.period_len, groups=self.enc_in)
-        self.mlp = nn.Sequential(
-            nn.Linear(self.seq_len // self.period_len, self.d_model),
-            nn.GELU(),
-            nn.Linear(self.d_model, self.pred_len // self.period_len)
-        )
-
-    def forward(self, x):
-        batch_size = x.shape[0]
-
-        # RevIN normalization
-        x = self.revin_layer(x, 'norm')
-
-        seq_mean = torch.mean(x, dim=1).unsqueeze(1)
-        x = (x - seq_mean).permute(0, 2, 1)  # [B, C, S]
-        B, C, S = x.shape
-        x = torch.reshape(x, (B*C, S))       # [B*C, S]
+        # Parameters
+        seq_len = configs.seq_len   # lookback window L
+        pred_len = configs.pred_len # prediction length (96, 192, 336, 720)
+        c_in = configs.enc_in       # input channels
 
         # Patching
-        if self.padding_patch == 'end':
-            x = self.padding_patch_layer(x)
-        x = x.unfold(dimension=-1, size=self.patch_len, step=self.stride) # [B*C, patch_num, patch_len]
+        patch_len = configs.patch_len
+        stride = configs.stride
+        padding_patch = configs.padding_patch
 
-        # Patch Embedding + Local Feature Extraction
-        x = self.fc1(x)
-        x = self.gelu1(x)
-        # bn1 expects [B*C, patch_num, d_model] -> need to permute for BatchNorm1d
-        x = x.permute(0, 2, 1)  # [B*C, d_model, patch_num]
-        x = self.bn1(x)
-        x = x.permute(0, 2, 1)  # [B*C, patch_num, d_model]
+        # Normalization
+        self.revin = configs.revin
+        self.revin_layer = RevIN(c_in,affine=True,subtract_last=False)
 
-        res = x
+        # Moving Average
+        self.ma_type = configs.ma_type
+        alpha = configs.alpha       # smoothing factor for EMA (Exponential Moving Average)
+        beta = configs.beta         # smoothing factor for DEMA (Double Exponential Moving Average)
 
-        # CNN Depthwise
-        # Conv1d expects [B*C, patch_num, d_model] -> [B*C, d_model, patch_num]
-        x = x.permute(0, 2, 1)  # [B*C, d_model, patch_num]
-        x = self.conv1(x)
-        x = self.gelu2(x)
-        x = self.bn2(x)
-        x = x.permute(0, 2, 1)  # [B*C, patch_num, d_model]
+        self.decomp = DECOMP(self.ma_type, alpha, beta)
+        self.net = Network(seq_len, pred_len, patch_len, stride, padding_patch, c_in)
+        # self.net_mlp = NetworkMLP(seq_len, pred_len) # For ablation study with MLP-only stream
+        # self.net_cnn = NetworkCNN(seq_len, pred_len, patch_len, stride, padding_patch) # For ablation study with CNN-only stream
 
-        # Residual Stream
-        res = self.fc2(res)  # [B*C, patch_num, patch_len]
-        # Resize res to match x if needed
-        if res.shape[-1] != x.shape[-1]:
-            res = nn.functional.interpolate(res, size=x.shape[-1], mode='linear', align_corners=False)
-        x = x + res
+    def forward(self, x):
+        # x: [Batch, Input, Channel]
 
-        # CNN Pointwise
-        x = x.permute(0, 2, 1)  # [B*C, d_model, patch_num]
-        x = self.conv2(x)
-        x = self.gelu3(x)
-        x = self.bn3(x)
-        x = x.permute(0, 2, 1)  # [B*C, patch_num, d_model]
+        # Normalization
+        if self.revin:
+            x = self.revin_layer(x, 'norm')
 
-        # Flatten Head
-        x = self.flatten1(x)  # [B*C, patch_num * d_model]
-        x = self.fc3(x)
-        x = self.gelu4(x)
-        x = self.fc4(x)
+        if self.ma_type == 'reg':   # If no decomposition, directly pass the input to the network
+            x = self.net(x, x)
+            # x = self.net_mlp(x) # For ablation study with MLP-only stream
+            # x = self.net_cnn(x) # For ablation study with CNN-only stream
+        else:
+            seasonal_init, trend_init = self.decomp(x)
+            x = self.net(seasonal_init, trend_init)
 
-        # Downsampling theo period_len
-        x = x.reshape(-1, self.enc_in, self.seq_len)
-        x_dow = self.dow(x)
-        x_dow = nn.functional.interpolate(x_dow, size=self.seq_len, mode='linear', align_corners=False)
-        x = x_dow + x
-
-        # downsampling: b,c,s -> bc,n,w -> bc,w,n
-        seg_num_x = self.seq_len // self.period_len
-        seg_num_y = self.pred_len // self.period_len
-        x = x.reshape(-1, seg_num_x, self.period_len).permute(0, 2, 1)
-
-        # Qua MLP để dự đoán
-        x = self.mlp(x)  # [B*C, period_len, seg_num_y]
-
-        # upsampling: bc,w,n -> bc,n,w -> b,c,s
-        x = x.permute(0, 2, 1).reshape(batch_size, self.enc_in, self.pred_len)
-
-        # permute and denorm
-        x = x.permute(0, 2, 1) + seq_mean
-
-        # RevIN denormalization
-        x = self.revin_layer(x, 'denorm')
+        # Denormalization
+        if self.revin:
+            x = self.revin_layer(x, 'denorm')
 
         return x
