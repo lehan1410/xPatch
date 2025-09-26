@@ -28,7 +28,10 @@ class Network(nn.Module):
             nn.GELU(),
             nn.Linear(self.d_model, self.seg_num_y)
         )
-        self.bn_mlp = nn.BatchNorm1d(self.pred_len)  # Sửa lại cho đúng shape
+        self.bn_mlp = nn.BatchNorm1d(self.pred_len)  
+
+        # Seasonal projection to match channel with trend
+        self.proj_seasonal = nn.Linear(self.enc_in, c_in)
 
         # Linear Stream (trend)
         self.fc5 = nn.Linear(seq_len, pred_len * 2)
@@ -56,6 +59,8 @@ class Network(nn.Module):
         y = y.permute(0, 2, 1)  # [B, pred_len, enc_in]
         y = self.bn_mlp(y)      # BatchNorm1d(pred_len)
         y = y.permute(0, 2, 1)  # [B, enc_in, pred_len]
+        y = y.permute(0, 2, 1)  # [B, pred_len, enc_in]
+        y = self.proj_seasonal(y)  # [B, pred_len, C]
 
         # Trend Stream
         t = torch.reshape(t, (B*C, I))
@@ -71,6 +76,6 @@ class Network(nn.Module):
         t = t.reshape(B*C, -1)
         t = self.fc8(t)
         t = torch.reshape(t, (B, C, self.pred_len))
-        t = t.permute(0,2,1) # [Batch, Output, Channel]
+        t = t.permute(0,2,1) # [Batch, Output, Channel] = [B, pred_len, C]
 
         return t + y
