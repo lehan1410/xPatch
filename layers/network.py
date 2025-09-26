@@ -72,7 +72,7 @@ class Network(nn.Module):
         self.fc7 = nn.Linear(pred_len // 2, pred_len)
 
         # Streams Concatination
-        self.fc8 = nn.Linear(pred_len * 2, pred_len)
+        self.fc8 = nn.Linear(pred_len, pred_len)
 
     def forward(self, s, t):
         # x: [Batch, Input, Channel]
