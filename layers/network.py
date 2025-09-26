@@ -63,13 +63,13 @@ class Network(nn.Module):
         # MLP
         self.fc5 = nn.Linear(seq_len, pred_len * 4)
         self.avgpool1 = nn.AvgPool1d(kernel_size=2)
-        self.ln1 = nn.LayerNorm(pred_len * 2)
+        self.ln1 = nn.LayerNorm(pred_len // 2)
 
         # self.fc6 = nn.Linear(pred_len * 2, pred_len)
         # self.avgpool2 = nn.AvgPool1d(kernel_size=2)
         # self.ln2 = nn.LayerNorm(pred_len // 2)
 
-        self.fc7 = nn.Linear(pred_len * 2, pred_len)
+        self.fc7 = nn.Linear(pred_len // 2, pred_len)
 
         # Streams Concatination
         self.fc8 = nn.Linear(pred_len, pred_len)
