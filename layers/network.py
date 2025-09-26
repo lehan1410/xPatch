@@ -18,11 +18,14 @@ class Network(nn.Module):
         self.conv1d = nn.Conv1d(in_channels=1, out_channels=1, kernel_size=1 + 2 * (self.period_len // 2),
                                 stride=1, padding=self.period_len // 2, padding_mode="zeros", bias=False)
 
+        self.bn_s = nn.BatchNorm1d(self.enc_in)
+
         self.mlp = nn.Sequential(
                 nn.Linear(self.seg_num_x, self.d_model),
                 nn.GELU(),
                 nn.Linear(self.d_model, self.seg_num_y)
             )
+        self.bn_mlp = nn.BatchNorm1d(self.enc_in)
         # Non-linear Stream
         # Patching
         # self.patch_len = patch_len
@@ -61,8 +64,10 @@ class Network(nn.Module):
 
         # Linear Stream
         # MLP
-        self.fc5 = nn.Linear(seq_len, pred_len * 4)
-        self.avgpool1 = nn.AvgPool1d(kernel_size=2)
+        self.fc5 = nn.Linear(seq_len, pred_len * 2)
+        # self.avgpool1 = nn.AvgPool1d(kernel_size=2)
+        self.gelu1 = nn.GELU()
+        self.bn_t1 = nn.BatchNorm1d(c_in)
         self.ln1 = nn.LayerNorm(pred_len * 2)
 
         # self.fc6 = nn.Linear(pred_len * 2, pred_len)
@@ -70,6 +75,7 @@ class Network(nn.Module):
         # self.ln2 = nn.LayerNorm(pred_len // 2)
 
         self.fc7 = nn.Linear(pred_len * 2, pred_len)
+        self.bn_t2 = nn.BatchNorm1d(c_in)
 
         # Streams Concatination
         self.fc8 = nn.Linear(pred_len, pred_len)
@@ -132,7 +138,10 @@ class Network(nn.Module):
         # Linear Stream
         # MLP
         t = self.fc5(t)
-        t = self.avgpool1(t)
+        t = self.gelu1(t)
+        t = t.reshape(B, C, -1)
+        t = self.bn_t1(t)
+        t = t.reshape(B*C, -1)
         t = self.ln1(t)
 
         # t = self.fc6(t)
@@ -140,7 +149,9 @@ class Network(nn.Module):
         # t = self.ln2(t)
 
         t = self.fc7(t)
-
+        t = t.reshape(B, C, -1)
+        t = self.bn_t2(t)
+        t = t.reshape(B*C, -1)
 
         t = self.fc8(t)
 
