@@ -20,7 +20,7 @@ class Network(nn.Module):
 
         self.mlp = nn.Sequential(
                 nn.Linear(self.seg_num_x, self.d_model),
-                nn.ReLU(),
+                nn.GELU(),
                 nn.Linear(self.d_model, self.seg_num_y)
             )
         # Non-linear Stream
@@ -61,15 +61,19 @@ class Network(nn.Module):
 
         # Linear Stream
         # MLP
-        self.fc5 = nn.Linear(seq_len, pred_len * 4)
-        self.avgpool1 = nn.AvgPool1d(kernel_size=2)
-        self.ln1 = nn.LayerNorm(pred_len // 2)
+        # self.fc5 = nn.Linear(seq_len, pred_len * 4)
+        # self.avgpool1 = nn.AvgPool1d(kernel_size=2)
+        # self.ln1 = nn.LayerNorm(pred_len * 2)
+
+        self.fc5 = nn.Linear(seq_len, pred_len)
+        self.ln1 = nn.LayerNorm(pred_len)
+        self.fc7 = nn.Linear(pred_len, pred_len)
 
         # self.fc6 = nn.Linear(pred_len * 2, pred_len)
         # self.avgpool2 = nn.AvgPool1d(kernel_size=2)
         # self.ln2 = nn.LayerNorm(pred_len // 2)
 
-        self.fc7 = nn.Linear(pred_len // 2, pred_len)
+        # self.fc7 = nn.Linear(pred_len // 2, pred_len)
 
         # Streams Concatination
         self.fc8 = nn.Linear(pred_len, pred_len)
@@ -132,14 +136,14 @@ class Network(nn.Module):
         # Linear Stream
         # MLP
         t = self.fc5(t)
-        t = self.avgpool1(t)
         t = self.ln1(t)
+        t = self.fc7(t)
 
         # t = self.fc6(t)
         # t = self.avgpool2(t)
         # t = self.ln2(t)
 
-        t = self.fc7(t)
+        # t = self.fc7(t)
 
 
         t = self.fc8(t)
