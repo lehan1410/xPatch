@@ -53,6 +53,8 @@ class Model(nn.Module):
 
         # Denormalization
         if self.revin:
+            x = x.permute(0, 2, 1)  # [batch, pred_len, enc_in]
             x = self.revin_layer(x, 'denorm')
+            x = x.permute(0, 2, 1)
 
         return x
