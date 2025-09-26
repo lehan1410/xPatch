@@ -7,8 +7,22 @@ class Network(nn.Module):
 
         # Parameters
         self.pred_len = pred_len
+        self.seq_len = seq_len
         self.c_in = c_in
+        self.period_len=24
+        self.d_model = 128
 
+        self.seg_num_x = self.seq_len // self.period_len
+        self.seg_num_y = self.pred_len // self.period_len
+
+        self.conv1d = nn.Conv1d(in_channels=1, out_channels=1, kernel_size=1 + 2 * (self.period_len // 2),
+                                stride=1, padding=self.period_len // 2, padding_mode="zeros", bias=False)
+
+        self.mlp = nn.Sequential(
+                nn.Linear(self.seg_num_x, self.d_model),
+                nn.ReLU(),
+                nn.Linear(self.d_model, self.seg_num_y)
+            )
         # Non-linear Stream
         # Patching
         # self.patch_len = patch_len
