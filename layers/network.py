@@ -54,8 +54,8 @@ class Network(nn.Module):
         # Seasonal Stream: Conv1d + Pooling
         s_conv = self.conv1d(s.reshape(-1, 1, self.seq_len))
         s_pool = self.pool(s.reshape(-1, 1, self.seq_len))
-        s = s_conv + s_pool
-        s = s.reshape(-1, self.enc_in, self.seq_len) + s
+        s_concat = s_conv + s_pool
+        s_concat = s_concat.reshape(-1, self.enc_in, self.seq_len) + s
         s = s.reshape(-1, self.seg_num_x, self.period_len).permute(0, 2, 1)
         y = self.mlp(s)
         y = y.permute(0, 2, 1).reshape(B, self.enc_in, self.pred_len)
