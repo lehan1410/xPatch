@@ -46,6 +46,8 @@ class Network(nn.Module):
         conv_out = self.conv1d(x)  # [Batch*Channel, 1, seq_len]
         x = conv_out + x  # [Batch*Channel, 1, seq_len]
         x = x.reshape(batch_size, self.enc_in, self.seq_len)
+        x = x.unfold(dimension=2, size=self.period_len, step=self.period_len)  # [batch, enc_in, seg_num_x, period_len]
+        x = x.mean(dim=-1)
 
         # sparse forecasting
         if self.model_type == 'linear':
