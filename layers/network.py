@@ -2,7 +2,7 @@ import torch
 from torch import nn
 
 class Network(nn.Module):
-    def __init__(self, seq_len, pred_len, patch_len, stride, padding_patch):
+    def __init__(self, seq_len, pred_len, patch_len, stride, padding_patch, c_in):
         super(Network, self).__init__()
 
         # Parameters
