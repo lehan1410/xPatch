@@ -30,6 +30,7 @@ class Network(nn.Module):
         )
         self.bn_seasonal = nn.BatchNorm1d(self.enc_in)
         self.bn_y = nn.BatchNorm1d(self.pred_len)
+        self.proj_seasonal = nn.Linear(self.enc_in, c_in)  # projection layer
 
         # Linear Stream
         self.fc5 = nn.Linear(seq_len, pred_len * 2)
@@ -50,14 +51,18 @@ class Network(nn.Module):
         t = torch.reshape(t, (B*C, I))
 
         # Seasonal Stream
-        s = self.conv1d(s.reshape(-1, 1, self.seq_len)).reshape(-1, self.enc_in, self.seq_len) + s
+        s = self.conv1d(s.reshape(-1, 1, self.seq_len))
+        s = self.pool(s)  # Pooling sau Conv1d
+        s = s.reshape(-1, self.enc_in, self.seq_len) + s.reshape(-1, self.enc_in, self.seq_len)
         s = self.bn_seasonal(s)
         s = s.reshape(-1, self.seg_num_x, self.period_len).permute(0, 2, 1)
         y = self.mlp(s)
         y = y.permute(0, 2, 1).reshape(B, self.enc_in, self.pred_len)
         y = y.permute(0, 2, 1) # [B, pred_len, enc_in]
-        y = self.bn_y(y)       # BatchNorm theo pred_len
+        y = self.bn_y(y)
         y = y.permute(0, 2, 1) # [B, enc_in, pred_len]
+        y = y.permute(0, 2, 1) # [B, pred_len, enc_in]
+        y = self.proj_seasonal(y) # [B, pred_len, C]
 
         # Linear Stream
         t = self.fc5(t)
@@ -69,5 +74,7 @@ class Network(nn.Module):
         t = self.bn_trend(t)
         t = t.permute(0,2,1) # [Batch, Output, Channel]
         t = self.bn_t(t)     # BatchNorm theo pred_len
+        t = t.permute(0,2,1) # [Batch, Channel, Output]
+        t = t.permute(0,2,1) # [Batch, Output, Channel] = [B, pred_len, C]
 
         return t + y
