@@ -72,7 +72,7 @@ class Network(nn.Module):
         ).to(s.device)
 
         # Chuẩn hóa và permute
-        x = s.permute(0, 2, 1)
+        x = s
 
         # 1D convolution aggregation
         x = self.conv1d(x.reshape(-1, 1, self.seq_len)).reshape(-1, self.enc_in, self.seq_len) + x
