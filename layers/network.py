@@ -21,6 +21,7 @@ class Network(nn.Module):
             stride=1, padding=self.period_len // 2,
             padding_mode="zeros", bias=False
         )
+        self.act = nn.GELU()
         self.pool = nn.AvgPool1d(
             kernel_size=1 + 2 * (self.period_len // 2),
             stride=1,
@@ -53,6 +54,7 @@ class Network(nn.Module):
 
         # Seasonal Stream: Conv1d + Pooling
         s_conv = self.conv1d(s.reshape(-1, 1, self.seq_len))
+        s_conv = self.act(self.conv1d(s.reshape(-1, 1, self.seq_len)))
         s_pool = self.pool(s.reshape(-1, 1, self.seq_len))
         s_concat = s_conv + s_pool
         s_concat = s_concat.reshape(-1, self.enc_in, self.seq_len) + s
