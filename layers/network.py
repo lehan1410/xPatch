@@ -21,61 +21,53 @@ class Network(nn.Module):
             stride=1, padding=self.period_len // 2,
             padding_mode="zeros", bias=False
         )
-        self.bn_s = nn.BatchNorm1d(self.enc_in)
+        self.pool = nn.AvgPool1d(kernel_size=3, stride=1, padding=1)
 
         self.mlp = nn.Sequential(
             nn.Linear(self.seg_num_x, self.d_model),
             nn.GELU(),
             nn.Linear(self.d_model, self.seg_num_y)
         )
-        self.bn_mlp = nn.BatchNorm1d(self.pred_len)  
+        self.bn_seasonal = nn.BatchNorm1d(self.enc_in)
+        self.bn_y = nn.BatchNorm1d(self.pred_len)
 
-        # Seasonal projection to match channel with trend
-        self.proj_seasonal = nn.Linear(self.enc_in, c_in)
-
-        # Linear Stream (trend)
+        # Linear Stream
         self.fc5 = nn.Linear(seq_len, pred_len * 2)
         self.gelu1 = nn.GELU()
-        self.bn_t1 = nn.BatchNorm1d(c_in)
         self.ln1 = nn.LayerNorm(pred_len * 2)
         self.fc7 = nn.Linear(pred_len * 2, pred_len)
-        self.bn_t2 = nn.BatchNorm1d(c_in)
         self.fc8 = nn.Linear(pred_len, pred_len)
+        self.bn_trend = nn.BatchNorm1d(c_in)
+        self.bn_t = nn.BatchNorm1d(self.pred_len)
 
     def forward(self, s, t):
-        # s, t: [Batch, Input, Channel]
         s = s.permute(0,2,1) # [Batch, Channel, Input]
         t = t.permute(0,2,1) # [Batch, Channel, Input]
 
-        B, C, I = s.shape
+        B = s.shape[0]
+        C = s.shape[1]
+        I = s.shape[2]
+        t = torch.reshape(t, (B*C, I))
 
         # Seasonal Stream
-        s_res = s.clone()
-        s = self.conv1d(s.reshape(-1, 1, self.seq_len)).reshape(-1, self.enc_in, self.seq_len) + s_res
-        s = self.bn_s(s)
+        s = self.conv1d(s.reshape(-1, 1, self.seq_len)).reshape(-1, self.enc_in, self.seq_len) + s
+        s = self.bn_seasonal(s)
         s = s.reshape(-1, self.seg_num_x, self.period_len).permute(0, 2, 1)
         y = self.mlp(s)
         y = y.permute(0, 2, 1).reshape(B, self.enc_in, self.pred_len)
-        y = y.permute(0, 2, 1)  # [B, pred_len, enc_in]
-        y = self.bn_mlp(y)      # BatchNorm1d(pred_len)
-        y = y.permute(0, 2, 1)  # [B, enc_in, pred_len]
-        y = y.permute(0, 2, 1)  # [B, pred_len, enc_in]
-        y = self.proj_seasonal(y)  # [B, pred_len, C]
+        y = y.permute(0, 2, 1) # [B, pred_len, enc_in]
+        y = self.bn_y(y)       # BatchNorm theo pred_len
+        y = y.permute(0, 2, 1) # [B, enc_in, pred_len]
 
-        # Trend Stream
-        t = torch.reshape(t, (B*C, I))
+        # Linear Stream
         t = self.fc5(t)
         t = self.gelu1(t)
-        t = t.reshape(B, C, -1)
-        t = self.bn_t1(t)
-        t = t.reshape(B*C, -1)
         t = self.ln1(t)
         t = self.fc7(t)
-        t = t.reshape(B, C, -1)
-        t = self.bn_t2(t)
-        t = t.reshape(B*C, -1)
         t = self.fc8(t)
-        t = torch.reshape(t, (B, C, self.pred_len))
-        t = t.permute(0,2,1) # [Batch, Output, Channel] = [B, pred_len, C]
+        t = t.reshape(B, C, self.pred_len)
+        t = self.bn_trend(t)
+        t = t.permute(0,2,1) # [Batch, Output, Channel]
+        t = self.bn_t(t)     # BatchNorm theo pred_len
 
         return t + y
