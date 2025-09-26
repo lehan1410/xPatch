@@ -1,24 +1,11 @@
 import torch
 from torch import nn
 
-class MedianPool1d(nn.Module):
-    def __init__(self, kernel_size, stride=1, padding=0):
-        super().__init__()
-        self.kernel_size = kernel_size
-        self.stride = stride
-        self.padding = padding
-
-    def forward(self, x):
-        # x: [batch, channel, length]
-        x = nn.functional.pad(x, (self.padding, self.padding), mode='reflect')
-        x = x.unfold(dimension=2, size=self.kernel_size, step=self.stride)
-        median, _ = x.median(dim=-1)
-        return median
-
 class Network(nn.Module):
     def __init__(self, seq_len, pred_len, patch_len, stride, padding_patch, c_in):
         super(Network, self).__init__()
 
+        # Parameters
         self.pred_len = pred_len
         self.seq_len = seq_len
         self.enc_in  = c_in
@@ -34,7 +21,7 @@ class Network(nn.Module):
             stride=1, padding=self.period_len // 2,
             padding_mode="zeros", bias=False
         )
-        self.pool = MedianPool1d(
+        self.pool = nn.AvgPool1d(
             kernel_size=1 + 2 * (self.period_len // 2),
             stride=1,
             padding=self.period_len // 2
@@ -43,10 +30,11 @@ class Network(nn.Module):
         self.mlp = nn.Sequential(
             nn.Linear(self.seg_num_x, self.d_model),
             nn.GELU(),
-            nn.Dropout(0.1), 
+            nn.Dropout(0.1),
             nn.Linear(self.d_model, self.seg_num_y)
         )
 
+        # Linear Stream
         self.fc5 = nn.Linear(seq_len, pred_len * 2)
         self.gelu1 = nn.GELU()
         self.ln1 = nn.LayerNorm(pred_len * 2)
@@ -54,6 +42,8 @@ class Network(nn.Module):
         self.fc8 = nn.Linear(pred_len, pred_len)
 
     def forward(self, s, t):
+        # s: [Batch, Input, Channel]
+        # t: [Batch, Input, Channel]
         s = s.permute(0,2,1) # [Batch, Channel, Input]
         t = t.permute(0,2,1) # [Batch, Channel, Input]
 
@@ -62,7 +52,7 @@ class Network(nn.Module):
         I = s.shape[2]
         t = torch.reshape(t, (B*C, I))
 
-        # Seasonal Stream: Conv1d + Median Pooling
+        # Seasonal Stream: Conv1d + Pooling
         s_conv = self.conv1d(s.reshape(-1, 1, self.seq_len))
         s_pool = self.pool(s.reshape(-1, 1, self.seq_len))
         s_concat = s_conv + s_pool
@@ -71,6 +61,7 @@ class Network(nn.Module):
         y = self.mlp(s)
         y = y.permute(0, 2, 1).reshape(B, self.enc_in, self.pred_len)
         y = y.permute(0, 2, 1) # [B, pred_len, enc_in]
+
 
         # Linear Stream
         t = self.fc5(t)
