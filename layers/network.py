@@ -71,8 +71,7 @@ class Network(nn.Module):
             nn.Linear(self.d_model, self.seg_num_y)
         ).to(s.device)
 
-        # Chuẩn hóa và permute
-        x = s
+        x = s  # [batch, enc_in, seq_len]
 
         # 1D convolution aggregation
         x = self.conv1d(x.reshape(-1, 1, self.seq_len)).reshape(-1, self.enc_in, self.seq_len) + x
@@ -84,7 +83,10 @@ class Network(nn.Module):
         y = self.mlp(x)
         y = y.permute(0, 2, 1).reshape(batch_size, self.enc_in, self.pred_len)
 
-        # KHÔNG cộng lại mean, chỉ cộng trend để khôi phục chuỗi gốc
-        y = y + t[:, :, -self.pred_len:]
+        # Đảm bảo t có shape [batch, enc_in, seq_len] trước khi slice
+        if t.shape[2] != self.seq_len:
+            t = t.permute(0, 2, 1)  # [batch, enc_in, seq_len]
+        trend_part = t[:, :, -self.pred_len:]  # [batch, enc_in, pred_len]
+        y = y + trend_part
 
         return y
