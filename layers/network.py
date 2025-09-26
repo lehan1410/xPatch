@@ -8,7 +8,7 @@ class Network(nn.Module):
         # Parameters
         self.pred_len = pred_len
         self.seq_len = seq_len
-        self.c_in = c_in
+        self.enc_in  = c_in
         self.period_len=24
         self.d_model = 128
 
