@@ -72,8 +72,7 @@ class Network(nn.Module):
         ).to(s.device)
 
         # Chuẩn hóa và permute
-        seq_mean = torch.mean(s, dim=1).unsqueeze(1)
-        x = (s - seq_mean).permute(0, 2, 1)
+        x = s.permute(0, 2, 1)
 
         # 1D convolution aggregation
         x = self.conv1d(x.reshape(-1, 1, self.seq_len)).reshape(-1, self.enc_in, self.seq_len) + x
@@ -85,7 +84,7 @@ class Network(nn.Module):
         y = self.mlp(x)
         y = y.permute(0, 2, 1).reshape(batch_size, self.enc_in, self.pred_len)
 
-        # permute and denorm
-        y = y.permute(0, 2, 1) + seq_mean
+        # KHÔNG cộng lại mean, chỉ cộng trend để khôi phục chuỗi gốc
+        y = y + t[:, :, -self.pred_len:]
 
         return y
