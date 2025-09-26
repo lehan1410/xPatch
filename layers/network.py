@@ -96,8 +96,10 @@ class Network(nn.Module):
         t = torch.reshape(t, (B*C, I)) # [Batch and Channel, Input]
 
         s = self.conv1d(s.reshape(-1, 1, self.seq_len)).reshape(-1, self.enc_in, self.seq_len) + s
+        s = self.bn_s(s)
         s = s.reshape(-1, self.seg_num_x, self.period_len).permute(0, 2, 1)
         y = self.mlp(s)
+        y = self.bn_mlp(y)
         y = y.permute(0, 2, 1).reshape(B, self.enc_in, self.pred_len)
         y = y.permute(0, 2, 1)
 
