@@ -69,7 +69,7 @@ class Network(nn.Module):
         # self.avgpool2 = nn.AvgPool1d(kernel_size=2)
         # self.ln2 = nn.LayerNorm(pred_len // 2)
 
-        self.fc7 = nn.Linear(pred_len // 2, pred_len)
+        self.fc7 = nn.Linear(pred_len * 2, pred_len)
 
         # Streams Concatination
         self.fc8 = nn.Linear(pred_len, pred_len)
