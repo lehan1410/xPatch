@@ -21,13 +21,7 @@ class Network(nn.Module):
             stride=1, padding=self.period_len // 2,
             padding_mode="zeros", bias=False
         )
-        self.pool = nn.AvgPool1d(
-            kernel_size=1 + 2 * (self.period_len // 2),
-            stride=1,
-            padding=self.period_len // 2
-        )
 
-        # Channel Mixing MLP
         self.channel_mlp = nn.Sequential(
             nn.Linear(self.enc_in, self.enc_in),
             nn.GELU(),
@@ -41,7 +35,8 @@ class Network(nn.Module):
         )
 
         # Linear Stream
-        self.fc5 = nn.Linear(seq_len, pred_len * 2)
+        self.fc5 = nn.Linear(seq_len, pred_len * 4)
+        self.avgpool1 = nn.AvgPool1d(kernel_size=2)
         self.gelu1 = nn.GELU()
         self.ln1 = nn.LayerNorm(pred_len * 2)
         self.fc7 = nn.Linear(pred_len * 2, pred_len)
@@ -58,20 +53,17 @@ class Network(nn.Module):
         I = s.shape[2]
         t = torch.reshape(t, (B*C, I))
 
-        # Seasonal Stream: Conv1d + Pooling + Channel Mixing MLP
-        s_conv = self.conv1d(s.reshape(-1, 1, self.seq_len))
-        s_pool = self.pool(s.reshape(-1, 1, self.seq_len))
-        s_concat = s_conv + s_pool
-        s_concat = s_concat.reshape(-1, self.enc_in, self.seq_len) + s
-        # Channel Mixing MLP
-        s_mixed = self.channel_mlp(s_concat.permute(0, 2, 1)).permute(0, 2, 1)  # [B, C, seq_len]
-        s = s_mixed.reshape(-1, self.seg_num_x, self.period_len).permute(0, 2, 1)
+        s = self.conv1d(s.reshape(-1, 1, self.seq_len)).reshape(-1, self.enc_in, self.seq_len) + s
+        s = s.reshape(-1, self.seg_num_x, self.period_len).permute(0, 2, 1)
         y = self.mlp(s)
         y = y.permute(0, 2, 1).reshape(B, self.enc_in, self.pred_len)
-        y = y.permute(0, 2, 1) # [B, pred_len, enc_in]
+        y = y.permute(0, 2, 1)
 
         # Linear Stream
         t = self.fc5(t)
+        t = t.unsqueeze(1)             # [B*C, 1, pred_len*4]
+        t = self.avgpool1(t)           # [B*C, 1, pred_len*2]
+        t = t.squeeze(1) 
         t = self.gelu1(t)
         t = self.ln1(t)
         t = self.fc7(t)
