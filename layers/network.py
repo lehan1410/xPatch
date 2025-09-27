@@ -46,11 +46,22 @@ class Network(nn.Module):
         )
 
         # Linear Stream
-        self.fc5 = nn.Linear(seq_len, pred_len * 2)
+        self.fc5 = nn.Linear(seq_len, pred_len * 4)
         self.gelu1 = nn.GELU()
+        self.avgpool1 = nn.AvgPool1d(kernel_size=2)
         self.ln1 = nn.LayerNorm(pred_len * 2)
-        self.fc7 = nn.Linear(pred_len * 2, pred_len)
-        self.fc8 = nn.Linear(pred_len, pred_len)
+
+        self.fc6 = nn.Linear(pred_len * 2, pred_len)
+        self.gelu2 = nn.GELU()
+        self.avgpool2 = nn.AvgPool1d(kernel_size=2)
+        self.ln2 = nn.LayerNorm(pred_len // 2)
+
+        self.fc7 = nn.Linear(pred_len // 2, pred_len)
+        self.gelu3 = nn.GELU()
+
+        # Streams Concatination
+        self.fc8 = nn.Linear(pred_len * 2, pred_len)
+        self.gelu4 = nn.GELU()
 
     def forward(self, s, t):
         # s: [Batch, Input, Channel]
@@ -78,7 +89,7 @@ class Network(nn.Module):
         if y_channel.shape[-1] != y_time.shape[-1]:
             y_channel = y_channel[..., :y_time.shape[-1]]
 
-        y = y_time + y_channel  # cộng lại
+        s = y_time + y_channel  
         
         y = self.mlp(s)
         y = y.permute(0, 2, 1).reshape(B, self.enc_in, self.pred_len)
@@ -89,9 +100,14 @@ class Network(nn.Module):
         t = self.fc5(t)
         t = self.gelu1(t)
         t = self.ln1(t)
+        t = self.fc6(t)
+        t = self.gelu2(t)
+        t = self.ln2(t)
         t = self.fc7(t)
+        t = self.gelu3(t)
         t = self.fc8(t)
+        t = self.gelu4(t)
         t = torch.reshape(t, (B, C, self.pred_len))
-        t = t.permute(0,2,1) # [Batch, Output, Channel] = [B, pred_len, C]
+        t = t.permute(0,2,1)
 
         return t + y
