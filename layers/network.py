@@ -60,7 +60,7 @@ class Network(nn.Module):
         temporal_emb = temporal_emb.permute(0, 2, 1)     # [B, C, seq_len]
         s_cat = torch.cat([s, temporal_emb], dim=1)
 
-        s = self.conv1d(s_cat).reshape(-1, self.enc_in, self.seq_len) + s
+        s = self.conv1d(s_cat) + s
         s = s.reshape(-1, self.seg_num_x, self.period_len).permute(0, 2, 1)
         y = self.mlp(s)
         y = y.permute(0, 2, 1).reshape(B, self.enc_in, self.pred_len)
