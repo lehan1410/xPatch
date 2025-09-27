@@ -48,17 +48,17 @@ class Network(nn.Module):
         )
 
         # Linear Stream
-        self.linear_stream = nn.Sequential(
-            nn.Linear(seq_len, seq_len // 2),
+        self.trend_conv = nn.Sequential(
+            nn.Conv1d(in_channels=1, out_channels=8, kernel_size=5, dilation=1, padding=2),
             nn.GELU(),
-            nn.Linear(seq_len // 2, seq_len // 4),
+            nn.Conv1d(in_channels=8, out_channels=8, kernel_size=5, dilation=2, padding=4),
             nn.GELU(),
-            nn.Linear(seq_len // 4, pred_len * 2),
-            nn.GELU(),
-            nn.LayerNorm(pred_len * 2),
-            nn.Linear(pred_len * 2, pred_len),
-            nn.GELU(),
-            nn.Linear(pred_len, pred_len)
+            nn.Conv1d(in_channels=8, out_channels=1, kernel_size=3, dilation=1, padding=1),
+            nn.GELU()
+        )
+        self.trend_linear = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(seq_len, pred_len)
         )
 
     def forward(self, s, t):
@@ -78,8 +78,11 @@ class Network(nn.Module):
         y = y.permute(0, 2, 1)
 
         # Linear Stream
-        t = self.linear_stream(t)
-        t = torch.reshape(t, (B, C, self.pred_len))
-        t = t.permute(0,2,1) # [Batch, Output, Channel] = [B, pred_len, C]
+        trend = t.unsqueeze(1)  # [B*C, 1, seq_len]
+        trend_feat = self.trend_conv(trend)  # [B*C, 1, seq_len]
+        trend_feat = trend_feat.squeeze(1)   # [B*C, seq_len]
+        trend_pred = self.trend_linear(trend_feat)  # [B*C, pred_len]
+        trend_pred = trend_pred.view(B, C, self.pred_len)
+        trend_pred = trend_pred.permute(0, 2, 1)
 
-        return t + y
+        return y + trend_pred
