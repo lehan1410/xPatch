@@ -6,9 +6,10 @@ class SEBlock(nn.Module):
     def __init__(self, channel, reduction=8):
         super(SEBlock, self).__init__()
         self.avg_pool = nn.AdaptiveAvgPool1d(1)
+        self.max_pool = nn.AdaptiveMaxPool1d(1)
         self.fc = nn.Sequential(
-            nn.Linear(channel, channel // reduction, bias=False),
-            nn.ReLU(inplace=True),
+            nn.Linear(channel * 2, channel // reduction, bias=False),
+            nn.GELU(),
             nn.Linear(channel // reduction, channel, bias=False),
             nn.Sigmoid()
         )
@@ -16,11 +17,12 @@ class SEBlock(nn.Module):
     def forward(self, x):
         # x: [B, C, L]
         b, c, l = x.size()
-        y = self.avg_pool(x)        # [B, C, 1]
-        y = y.view(b, c)            # [B, C]
-        y = self.fc(y).view(b, c, 1)  # [B, C, 1]
-        return x * y.expand_as(x) 
-
+        y_avg = self.avg_pool(x).view(b, c)  # [B, C]
+        y_max = self.max_pool(x).view(b, c)  # [B, C]
+        y = torch.cat([y_avg, y_max], dim=1) # [B, 2C]
+        y = self.fc(y).view(b, c, 1)         # [B, C, 1]
+        return x * y.expand_as(x)
+    
 class Network(nn.Module):
     def __init__(self, seq_len, pred_len, patch_len, stride, padding_patch, c_in):
         super(Network, self).__init__()
@@ -35,7 +37,7 @@ class Network(nn.Module):
         self.seg_num_x = self.seq_len // self.period_len
         self.seg_num_y = self.pred_len // self.period_len
 
-        self.temporal_emb = nn.Parameter(torch.zeros(self.seq_len, self.enc_in))
+        self.temporal_emb = nn.Parameter(torch.zeros(self.seq_len, self.enc_in), requires_grad=True)
         nn.init.xavier_uniform_(self.temporal_emb)
 
         self.conv1d = nn.Conv1d(
@@ -56,16 +58,13 @@ class Network(nn.Module):
             nn.Linear(self.seg_num_x, self.d_model),
             nn.GELU(),
             nn.Linear(self.d_model, self.seg_num_y),
-            nn.GELU()
         )
 
         # Linear Stream
         self.fc5 = nn.Linear(seq_len, pred_len * 4)
         self.gelu1 = nn.GELU()
-        self.avgpool1 = nn.AvgPool1d(kernel_size=2)
         self.ln1 = nn.LayerNorm(pred_len * 2)
         self.fc7 = nn.Linear(pred_len * 2, pred_len)
-        self.act_trend = nn.GELU()
         self.fc8 = nn.Linear(pred_len, pred_len)
 
     def forward(self, s, t):
@@ -96,12 +95,8 @@ class Network(nn.Module):
         # Linear Stream
         t = self.fc5(t)
         t = self.gelu1(t)
-        t = t.unsqueeze(1)  # [B*C, 1, pred_len*2]
-        t = self.avgpool1(t)  # [B*C, 1, pred_len*2//2]
-        t = t.squeeze(1)
         t = self.ln1(t)
         t = self.fc7(t)
-        t = self.act_trend(t)
         t = self.fc8(t)
         t = torch.reshape(t, (B, C, self.pred_len))
         t = t.permute(0,2,1) # [Batch, Output, Channel] = [B, pred_len, C]
