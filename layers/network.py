@@ -1,6 +1,32 @@
 import torch
 from torch import nn
 
+class MLPMixerBlock(nn.Module):
+    def __init__(self, num_patches, num_channels, hidden_dim=128):
+        super().__init__()
+        self.ln1 = nn.LayerNorm(num_channels)
+        self.mlp_time = nn.Sequential(
+            nn.Linear(num_patches, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, num_patches)
+        )
+        self.ln2 = nn.LayerNorm(num_channels)
+        self.mlp_channel = nn.Sequential(
+            nn.Linear(num_channels, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, num_channels)
+        )
+
+    def forward(self, x):
+        # x: [B, num_channels, num_patches]
+        y = self.ln1(x)
+        y = y.permute(0, 2, 1)  # [B, num_patches, num_channels]
+        y = self.mlp_time(y).permute(0, 2, 1)
+        x = x + y  # residual
+        y = self.ln2(x)
+        y = self.mlp_channel(y)
+        return x + y  # residual
+
 class Network(nn.Module):
     def __init__(self, seq_len, pred_len, patch_len, stride, padding_patch, c_in):
         super(Network, self).__init__()
@@ -22,18 +48,11 @@ class Network(nn.Module):
             padding_mode="zeros", bias=False
         )
 
-        self.depthwise = nn.Conv1d(
-            in_channels=self.enc_in, out_channels=self.enc_in,
-            kernel_size=3, padding=1, groups=self.enc_in, bias=False
-        )
-        self.pointwise = nn.Conv1d(
-            in_channels=self.enc_in, out_channels=self.enc_in,
-            kernel_size=1, bias=False
-        )
-        self.dw_act = nn.GELU()
-
         self.cycle_len = self.seq_len
         self.temporalQuery = torch.nn.Parameter(torch.zeros(self.cycle_len, self.enc_in), requires_grad=True)
+
+        # MLP-Mixer block thay cho depthwise+pointwise
+        self.mixer = MLPMixerBlock(num_patches=self.seg_num_x, num_channels=self.enc_in, hidden_dim=self.d_model)
 
         # MLP cho seasonal stream với LayerNorm
         self.mlp = nn.Sequential(
@@ -68,9 +87,10 @@ class Network(nn.Module):
         s = s + self.temporalQuery[:self.seq_len, :].T.unsqueeze(0)
 
         s = self.conv1d(s.reshape(-1, 1, self.seq_len)).reshape(-1, self.enc_in, self.seq_len) + s
-        s_dw = self.depthwise(s)
-        s_pw = self.pointwise(self.dw_act(s_dw))
-        s = s_pw.reshape(-1, self.seg_num_x, self.period_len).permute(0, 2, 1)
+        # reshape seasonal stream để vào MLP-Mixer
+        s_mixer = s.reshape(-1, self.enc_in, self.seg_num_x)  # [B*, C, seg_num_x]
+        s_mixer = self.mixer(s_mixer)                         # [B*, C, seg_num_x]
+        s = s_mixer.permute(0, 2, 1)                          # [B*, seg_num_x, C]
         y = self.mlp(s)
         y = y.permute(0, 2, 1).reshape(B, self.enc_in, self.pred_len)
         y = y.permute(0, 2, 1)
