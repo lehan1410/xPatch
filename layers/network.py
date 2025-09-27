@@ -62,7 +62,7 @@ class Network(nn.Module):
         self.seg_num_y = self.pred_len // self.period_len
 
         self.conv1d = nn.Conv1d(
-            in_channels=self.1, out_channels=1,
+            in_channels=1, out_channels=1,
             kernel_size=1 + 2 * (self.period_len // 2),
             stride=1, padding=self.period_len // 2,
             padding_mode="zeros", bias=False
