@@ -27,6 +27,13 @@ class Network(nn.Module):
             padding=self.period_len // 2
         )
 
+        # Channel Mixing MLP
+        self.channel_mlp = nn.Sequential(
+            nn.Linear(self.enc_in, self.enc_in),
+            nn.GELU(),
+            nn.Linear(self.enc_in, self.enc_in)
+        )
+
         self.mlp = nn.Sequential(
             nn.Linear(self.seg_num_x, self.d_model),
             nn.GELU(),
@@ -51,16 +58,17 @@ class Network(nn.Module):
         I = s.shape[2]
         t = torch.reshape(t, (B*C, I))
 
-        # Seasonal Stream: Conv1d + Pooling
+        # Seasonal Stream: Conv1d + Pooling + Channel Mixing MLP
         s_conv = self.conv1d(s.reshape(-1, 1, self.seq_len))
         s_pool = self.pool(s.reshape(-1, 1, self.seq_len))
         s_concat = s_conv + s_pool
         s_concat = s_concat.reshape(-1, self.enc_in, self.seq_len) + s
-        s = s.reshape(-1, self.seg_num_x, self.period_len).permute(0, 2, 1)
+        # Channel Mixing MLP
+        s_mixed = self.channel_mlp(s_concat.permute(0, 2, 1)).permute(0, 2, 1)  # [B, C, seq_len]
+        s = s_mixed.reshape(-1, self.seg_num_x, self.period_len).permute(0, 2, 1)
         y = self.mlp(s)
         y = y.permute(0, 2, 1).reshape(B, self.enc_in, self.pred_len)
         y = y.permute(0, 2, 1) # [B, pred_len, enc_in]
-
 
         # Linear Stream
         t = self.fc5(t)
