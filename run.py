@@ -22,7 +22,7 @@ parser.add_argument('--train_only', type=bool, required=False, default=False, he
 parser.add_argument('--model_id', type=str, required=True, default='test', help='model id')
 parser.add_argument('--model', type=str, required=True, default='xPatch',
                     help='model name, options: [xPatch]')
-parser.add_argument('--cycle', type=int, default=24, help='cycle length')
+
 # data loader
 parser.add_argument('--data', type=str, required=True, default='ETTh1', help='dataset type')
 parser.add_argument('--root_path', type=str, default='./dataset', help='root path of the data file')
@@ -99,7 +99,6 @@ if args.is_training:
             args.seq_len,
             args.label_len,
             args.pred_len,
-            args.cycle,
             args.des, ii)
 
         exp = Exp(args)  # set experiments
@@ -119,7 +118,6 @@ else:
                                                           args.seq_len,
                                                           args.label_len,
                                                           args.pred_len,
-                                                          args.cycle,
                                                           args.des, ii)
 
     exp = Exp(args)  # set experiments
