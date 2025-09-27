@@ -7,16 +7,16 @@ class MLPMixerBlock(nn.Module):
         # Token-mixing MLP (trộn giữa các period)
         self.token_mlp = nn.Sequential(
             nn.LayerNorm(num_period),  # Sửa lại thành period_len
-            nn.Linear(period_len, hidden_dim),
-            nn.GELU(),
-            nn.Linear(hidden_dim, period_len)
-        )
-        # Channel-mixing MLP (trộn giữa các giá trị trong period)
-        self.channel_mlp = nn.Sequential(
-            nn.LayerNorm(num_period),  # Sửa lại thành num_period
             nn.Linear(num_period, hidden_dim),
             nn.GELU(),
             nn.Linear(hidden_dim, num_period)
+        )
+        # Channel-mixing MLP (trộn giữa các giá trị trong period)
+        self.channel_mlp = nn.Sequential(
+            nn.LayerNorm(period_len),  # Sửa lại thành num_period
+            nn.Linear(period_len, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, period_len)
         )
 
     def forward(self, x):
