@@ -2,7 +2,7 @@ import torch
 from torch import nn
 
 class Network(nn.Module):
-    def __init__(self, seq_len, pred_len, patch_len, stride, padding_patch, c_in, cycle_index):
+    def __init__(self, seq_len, pred_len, patch_len, stride, padding_patch, c_in, cycle_len):
         super(Network, self).__init__()
 
         # Parameters
@@ -11,7 +11,7 @@ class Network(nn.Module):
         self.enc_in  = c_in
         self.period_len = 24
         self.d_model = 128
-        self.cycle_len = cycle_index
+        self.cycle_len = cycle_len
 
         self.seg_num_x = self.seq_len // self.period_len
         self.seg_num_y = self.pred_len // self.period_len
