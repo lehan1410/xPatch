@@ -33,7 +33,7 @@ class MLPMixerBlock(nn.Module):
         y2 = self.mlp_channel(y2)                            # [B, num_patches, num_channels]
         y2 = y2.transpose(1, 2)                              # [B, num_channels, num_patches]
         
-    return y + y2
+        return y + y2
 
 
 class Network(nn.Module):
