@@ -1,28 +1,6 @@
 import torch
 from torch import nn
 
-
-class SEBlock(nn.Module):
-    def __init__(self, channel, reduction=8):
-        super(SEBlock, self).__init__()
-        self.avg_pool = nn.AdaptiveAvgPool1d(1)
-        self.max_pool = nn.AdaptiveMaxPool1d(1)
-        self.fc = nn.Sequential(
-            nn.Linear(channel * 2, channel // reduction, bias=False),
-            nn.GELU(),
-            nn.Linear(channel // reduction, channel, bias=False),
-            nn.Sigmoid()
-        )
-
-    def forward(self, x):
-        # x: [B, C, L]
-        b, c, l = x.size()
-        y_avg = self.avg_pool(x).view(b, c)  # [B, C]
-        y_max = self.max_pool(x).view(b, c)  # [B, C]
-        y = torch.cat([y_avg, y_max], dim=1) # [B, 2C]
-        y = self.fc(y).view(b, c, 1)         # [B, C, 1]
-        return x * y.expand_as(x)
-    
 class Network(nn.Module):
     def __init__(self, seq_len, pred_len, patch_len, stride, padding_patch, c_in):
         super(Network, self).__init__()
@@ -37,9 +15,6 @@ class Network(nn.Module):
         self.seg_num_x = self.seq_len // self.period_len
         self.seg_num_y = self.pred_len // self.period_len
 
-        self.temporal_emb = nn.Parameter(torch.zeros(self.seq_len, self.enc_in), requires_grad=True)
-        nn.init.xavier_uniform_(self.temporal_emb)
-
         self.conv1d = nn.Conv1d(
             in_channels=1, out_channels=1,
             kernel_size=1 + 2 * (self.period_len // 2),
@@ -52,12 +27,21 @@ class Network(nn.Module):
             padding=self.period_len // 2
         )
 
-        self.se_block = SEBlock(self.enc_in, reduction=8)
+        # Depthwise Separable Convolution
+        self.depthwise = nn.Conv1d(
+            in_channels=self.enc_in, out_channels=self.enc_in,
+            kernel_size=3, padding=1, groups=self.enc_in, bias=False
+        )
+        self.pointwise = nn.Conv1d(
+            in_channels=self.enc_in, out_channels=self.enc_in,
+            kernel_size=1, bias=False
+        )
+        self.dw_act = nn.GELU()
 
         self.mlp = nn.Sequential(
             nn.Linear(self.seg_num_x, self.d_model),
             nn.GELU(),
-            nn.Linear(self.d_model, self.seg_num_y),
+            nn.Linear(self.d_model, self.seg_num_y)
         )
 
         # Linear Stream
@@ -78,19 +62,20 @@ class Network(nn.Module):
         I = s.shape[2]
         t = torch.reshape(t, (B*C, I))
 
-        s = s + self.temporal_emb.T.unsqueeze(0)
-
         # Seasonal Stream: Conv1d + Pooling
         s_conv = self.conv1d(s.reshape(-1, 1, self.seq_len))
         s_pool = self.pool(s.reshape(-1, 1, self.seq_len))
         s_concat = s_conv + s_pool
         s_concat = s_concat.reshape(-1, self.enc_in, self.seq_len) + s
-        s_se = self.se_block(s_concat)
-        s = s_se.reshape(-1, self.seg_num_x, self.period_len).permute(0, 2, 1)
+
+        # Depthwise Separable Convolution
+        s_dw = self.depthwise(s_concat)           # Depthwise
+        s_pw = self.pointwise(self.dw_act(s_dw))  # Pointwise + activation
+
+        s = s_pw.reshape(-1, self.seg_num_x, self.period_len).permute(0, 2, 1)
         y = self.mlp(s)
         y = y.permute(0, 2, 1).reshape(B, self.enc_in, self.pred_len)
         y = y.permute(0, 2, 1) # [B, pred_len, enc_in]
-
 
         # Linear Stream
         t = self.fc5(t)
