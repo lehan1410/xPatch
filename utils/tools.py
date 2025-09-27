@@ -29,9 +29,11 @@ def adjust_learning_rate(optimizer, epoch, args):
         w = 10 
         total_epochs = args.train_epochs
         if epoch < w:
-            lr = args.learning_rate * (epoch + 1) / w
+            lr_adjust = {epoch: args.learning_rate * (epoch + 1) / w}
+            # lr = args.learning_rate * (epoch + 1) / w
         else:
-            lr = 0.5 * args.learning_rate * (1 + np.cos(np.pi * (epoch - w) / (total_epochs - w)))
+            lr_adjust = {epoch: 0.5 * args.learning_rate * (1 + np.cos(np.pi * (epoch - w) / (total_epochs - w)))}
+            # lr = 0.5 * args.learning_rate * (1 + np.cos(np.pi * (epoch - w) / (total_epochs - w)))
     
     elif args.lradj == 'constant':
         lr_adjust = {epoch: args.learning_rate}
