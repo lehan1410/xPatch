@@ -7,5 +7,3 @@ From https://github.com/lehan1410/xPatch
    mse:0.1279510110616684, mae:0.21805907785892487 electric 96
 
 
-
-d918e2a..d058d84  main       -> origin/main

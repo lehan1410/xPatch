@@ -26,6 +26,7 @@ def adjust_learning_rate(optimizer, epoch, args):
         lr_adjust = {epoch: args.learning_rate / (1 + np.exp(-k * (epoch - w))) - args.learning_rate / (1 + np.exp(-k/s * (epoch - w*s)))}
     
     elif args.lradj == 'cosine':
+        w = 10 
         total_epochs = args.train_epochs
         if epoch < w:
             lr = args.learning_rate * (epoch + 1) / w
