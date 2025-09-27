@@ -61,7 +61,7 @@ class Network(nn.Module):
         )
 
         # Linear Stream
-        self.fc5 = nn.Linear(seq_len, pred_len * 4)
+        self.fc5 = nn.Linear(seq_len, pred_len * 2)
         self.gelu1 = nn.GELU()
         self.ln1 = nn.LayerNorm(pred_len * 2)
         self.fc7 = nn.Linear(pred_len * 2, pred_len)
