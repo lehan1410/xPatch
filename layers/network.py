@@ -1,8 +1,22 @@
 import torch
 from torch import nn
 
+# Thêm import Mamba
+from mamba_ssm import Mamba
+
 class Network(nn.Module):
-    def __init__(self, seq_len, pred_len, patch_len, stride, padding_patch, c_in):
+    def __init__(
+        self, 
+        seq_len, 
+        pred_len, 
+        patch_len, 
+        stride, 
+        padding_patch, 
+        c_in,
+        mamba_layers=2,
+        mamba_d_state=16,
+        mamba_d_conv=4
+    ):
         super(Network, self).__init__()
 
         # Parameters
@@ -27,16 +41,18 @@ class Network(nn.Module):
             padding=self.period_len // 2
         )
 
-        self.mlp_time = nn.Sequential(
-            nn.Linear(self.seg_num_x, self.d_model),
-            nn.GELU(),
-            nn.Linear(self.d_model, self.seg_num_y)
+        # Thay thế MLP bằng Mamba cho time và channel
+        self.mamba_time = Mamba(
+            d_model=self.period_len,
+            n_layers=mamba_layers,
+            d_state=mamba_d_state,
+            d_conv=mamba_d_conv
         )
-        # MLP cho tương tác channel
-        self.mlp_channel = nn.Sequential(
-            nn.Linear(self.period_len, self.d_model),
-            nn.GELU(),
-            nn.Linear(self.d_model, self.period_len)
+        self.mamba_channel = Mamba(
+            d_model=self.seg_num_x,
+            n_layers=mamba_layers,
+            d_state=mamba_d_state,
+            d_conv=mamba_d_conv
         )
 
         self.mlp = nn.Sequential(
@@ -75,9 +91,10 @@ class Network(nn.Module):
         s_concat = s_concat.reshape(-1, self.enc_in, self.seq_len) + s
         s = s_concat.reshape(-1, self.seg_num_x, self.period_len).permute(0, 2, 1)
 
-        y_time = self.mlp_time(s)
+        # Sử dụng Mamba thay cho MLP
+        y_time = self.mamba_time(s)
         s_channel = s.permute(0, 2, 1)  # [*, seg_num_x, period_len]
-        y_channel = self.mlp_channel(s_channel)  # [*, seg_num_x, period_len]
+        y_channel = self.mamba_channel(s_channel)
         y_channel = y_channel.permute(0, 2, 1)  # [*, period_len, seg_num_x]
         # Resize y_channel để match shape với y_time nếu cần
         if y_channel.shape[-1] != y_time.shape[-1]:
@@ -88,7 +105,6 @@ class Network(nn.Module):
         y = self.mlp(s)
         y = y.permute(0, 2, 1).reshape(B, self.enc_in, self.pred_len)
         y = y.permute(0, 2, 1) # [B, pred_len, enc_in]
-
 
         # Linear Stream
         t = self.fc5(t)
