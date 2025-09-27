@@ -19,16 +19,16 @@ class Network(nn.Module):
         self.temporalQuery = nn.Parameter(torch.zeros(24, self.enc_in), requires_grad=True)
 
         self.conv1d = nn.Conv1d(
-            in_channels=1, out_channels=1,
+            in_channels=self.enc_in * 2, out_channels=1,
             kernel_size=1 + 2 * (self.period_len // 2),
             stride=1, padding=self.period_len // 2,
             padding_mode="zeros", bias=False
         )
-        self.pool = nn.AvgPool1d(
-            kernel_size=1 + 2 * (self.period_len // 2),
-            stride=1,
-            padding=self.period_len // 2
-        )
+        # self.pool = nn.AvgPool1d(
+        #     kernel_size=1 + 2 * (self.period_len // 2),
+        #     stride=1,
+        #     padding=self.period_len // 2
+        # )
 
         self.mlp = nn.Sequential(
             nn.Linear(self.seg_num_x, self.d_model),
@@ -58,17 +58,23 @@ class Network(nn.Module):
         gather_index = (cycle_index.view(-1, 1) + torch.arange(self.seq_len, device=s.device).view(1, -1)) % self.cycle_len
         temporal_emb = self.temporalQuery[gather_index]  # [B, seq_len, C]
         temporal_emb = temporal_emb.permute(0, 2, 1)     # [B, C, seq_len]
-        s = s + temporal_emb
+        s_cat = torch.cat([s, temporal_emb], dim=1)
 
-        # Seasonal Stream: Conv1d + Pooling
-        s_conv = self.conv1d(s.reshape(-1, 1, self.seq_len))
-        s_pool = self.pool(s.reshape(-1, 1, self.seq_len))
-        s_concat = s_conv + s_pool
-        s_concat = s_concat.reshape(-1, self.enc_in, self.seq_len) + s
-        s = s_concat.reshape(-1, self.seg_num_x, self.period_len).permute(0, 2, 1)
+        s = self.conv1d(s_cat).reshape(-1, self.enc_in, self.seq_len) + s
+        s = s.reshape(-1, self.seg_num_x, self.period_len).permute(0, 2, 1)
         y = self.mlp(s)
         y = y.permute(0, 2, 1).reshape(B, self.enc_in, self.pred_len)
-        y = y.permute(0, 2, 1) # [B, pred_len, enc_in]
+        y = y.permute(0, 2, 1)
+
+        # Seasonal Stream: Conv1d + Pooling
+        # s_conv = self.conv1d(s.reshape(-1, 1, self.seq_len))
+        # s_pool = self.pool(s.reshape(-1, 1, self.seq_len))
+        # s_concat = s_conv + s_pool
+        # s_concat = s_concat.reshape(-1, self.enc_in, self.seq_len) + s
+        # s = s_concat.reshape(-1, self.seg_num_x, self.period_len).permute(0, 2, 1)
+        # y = self.mlp(s)
+        # y = y.permute(0, 2, 1).reshape(B, self.enc_in, self.pred_len)
+        # y = y.permute(0, 2, 1) # [B, pred_len, enc_in]
 
 
         # Linear Stream
