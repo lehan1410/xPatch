@@ -1,31 +1,17 @@
 import torch
 from torch import nn
 
-class MLPMixerBlock(nn.Module):
-    def __init__(self, period_len, num_period, hidden_dim=64):
+class PeriodGLUBlock(nn.Module):
+    def __init__(self, period_len, num_period):
         super().__init__()
-        # Token-mixing MLP (trộn giữa các period)
-        self.token_mlp = nn.Sequential(
-            nn.LayerNorm(num_period),  # Sửa lại thành period_len
-            nn.Linear(num_period, hidden_dim),
-            nn.GELU(),
-            nn.Linear(hidden_dim, num_period)
-        )
-        # Channel-mixing MLP (trộn giữa các giá trị trong period)
-        self.channel_mlp = nn.Sequential(
-            nn.LayerNorm(period_len),  # Sửa lại thành num_period
-            nn.Linear(period_len, hidden_dim),
-            nn.GELU(),
-            nn.Linear(hidden_dim, period_len)
-        )
+        self.linear = nn.Linear(num_period, num_period * 2)
 
     def forward(self, x):
         # x: [B, period_len, num_period]
-        # Token-mixing: trộn theo chiều period (2)
-        y = x + self.token_mlp(x)
-        # Channel-mixing: trộn theo chiều channel (1)
-        y = y + self.channel_mlp(y.transpose(1,2)).transpose(1,2)
-        return y
+        out = self.linear(x)  # [B, period_len, num_period*2]
+        a, b = out.chunk(2, dim=-1)
+        return a * torch.sigmoid(b)
+
 class Network(nn.Module):
     def __init__(self, seq_len, pred_len, patch_len, stride, padding_patch, c_in):
         super(Network, self).__init__()
@@ -52,8 +38,8 @@ class Network(nn.Module):
             padding=self.period_len // 2
         )
 
-        # self.mixer = MLPMixerBlock(self.period_len, self.seg_num_x, hidden_dim=16)
-
+        # Sử dụng GLU block thay cho gating
+        self.period_glu = PeriodGLUBlock(self.period_len, self.seg_num_x)
 
         self.mlp = nn.Sequential(
             nn.Linear(self.seg_num_x, self.d_model),
@@ -91,12 +77,11 @@ class Network(nn.Module):
         s_pool = self.pool(s.reshape(-1, 1, self.seq_len))
         s_concat = s_conv + s_pool
         s_concat = s_concat.reshape(-1, self.enc_in, self.seq_len) + s
-        s = s_concat.reshape(-1, self.seg_num_x, self.period_len).permute(0, 2, 1)
-        # s = self.mixer(s)
+        s = s_concat.reshape(-1, self.seg_num_x, self.period_len).permute(0, 2, 1)  # [B, period_len, num_period]
+        s = self.period_glu(s)  # GLU block
         y = self.mlp(s)
         y = y.permute(0, 2, 1).reshape(B, self.enc_in, self.pred_len)
         y = y.permute(0, 2, 1) # [B, pred_len, enc_in]
-
 
         # Linear Stream
         t = self.linear_stream(t)
