@@ -19,14 +19,15 @@ class MLPMixerBlock(nn.Module):
 
     def forward(self, x):
         # x: [B, num_channels, num_patches]
-        y = self.ln1(x.permute(0, 2, 1)).permute(0, 2, 1)  # LayerNorm trên channel
-        y = y.permute(0, 2, 1)  # [B, num_patches, num_channels]
-        y = self.mlp_time(y).permute(0, 2, 1)
-        x = x + y  # residual
-        y = self.ln2(x.permute(0, 2, 1)).permute(0, 2, 1)  # LayerNorm trên channel
-        y = self.mlp_channel(y)
-        return x + y  # residual
-
+        # Trộn theo chiều thời gian (num_patches)
+        y = self.ln1(x.permute(0, 2, 1)).permute(0, 2, 1)  # [B, num_channels, num_patches]
+        y_time = y.permute(0, 2, 1)                        # [B, num_patches, num_channels]
+        y_time = self.mlp_time(y_time)                      # [B, num_patches, num_channels]
+        y = y + y_time.permute(0, 2, 1)                    # [B, num_channels, num_patches]
+        # Trộn theo chiều channel
+        y2 = self.ln2(y.permute(0, 2, 1)).permute(0, 2, 1)
+        y2 = self.mlp_channel(y2)
+        return y + y2
 class Network(nn.Module):
     def __init__(self, seq_len, pred_len, patch_len, stride, padding_patch, c_in):
         super(Network, self).__init__()
@@ -51,7 +52,6 @@ class Network(nn.Module):
         self.cycle_len = self.seq_len
         self.temporalQuery = torch.nn.Parameter(torch.zeros(self.cycle_len, self.enc_in), requires_grad=True)
 
-        # MLP-Mixer block thay cho depthwise+pointwise
         self.mixer = MLPMixerBlock(num_patches=self.seg_num_x, num_channels=self.enc_in, hidden_dim=self.d_model)
 
         # MLP cho seasonal stream với LayerNorm
