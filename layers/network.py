@@ -61,7 +61,6 @@ class Network(nn.Module):
 
         # Streams Concatination
         self.fc8 = nn.Linear(pred_len * 2, pred_len)
-        self.gelu4 = nn.GELU()
 
     def forward(self, s, t):
         # s: [Batch, Input, Channel]
@@ -111,8 +110,7 @@ class Network(nn.Module):
         t = self.gelu3(t)
 
         t = self.fc8(t)
-        t = self.gelu4(t)
-        
+
         t = torch.reshape(t, (B, C, self.pred_len))
         t = t.permute(0,2,1)
 
