@@ -19,11 +19,11 @@ class MLPMixerBlock(nn.Module):
 
     def forward(self, x):
         # x: [B, num_channels, num_patches]
-        y = self.ln1(x)
+        y = self.ln1(x.permute(0, 2, 1)).permute(0, 2, 1)  # LayerNorm trên channel
         y = y.permute(0, 2, 1)  # [B, num_patches, num_channels]
         y = self.mlp_time(y).permute(0, 2, 1)
         x = x + y  # residual
-        y = self.ln2(x)
+        y = self.ln2(x.permute(0, 2, 1)).permute(0, 2, 1)  # LayerNorm trên channel
         y = self.mlp_channel(y)
         return x + y  # residual
 
