@@ -12,25 +12,9 @@ import os
 import time
 import warnings
 import math
-import torch
+
 warnings.filterwarnings('ignore')
 
-def count_parameters(model):
-    # Nếu dùng DataParallel, truy cập model.module
-    if isinstance(model, nn.DataParallel):
-        model = model.module
-    return sum(p.numel() for p in model.parameters() if p.requires_grad)
-
-def get_model_memory(model, input_shape, device='cuda'):
-    # Nếu dùng DataParallel, truy cập model.module
-    if isinstance(model, nn.DataParallel):
-        model = model.module
-    dummy_input = torch.randn(*input_shape).to(device)
-    with torch.no_grad():
-        torch.cuda.reset_peak_memory_stats(device)
-        _ = model(dummy_input)
-        mem = torch.cuda.max_memory_allocated(device) / (1024 ** 2)  # MB
-    return mem
 class Exp_Main(Exp_Basic):
     def __init__(self, args):
         super(Exp_Main, self).__init__(args)
@@ -69,19 +53,18 @@ class Exp_Main(Exp_Basic):
         total_loss = []
         self.model.eval()
         with torch.no_grad():
-            for i, (batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle) in enumerate(vali_loader):
+            for i, (batch_x, batch_y, batch_x_mark, batch_y_mark) in enumerate(vali_loader):
                 batch_x = batch_x.float().to(self.device)
                 batch_y = batch_y.float()
 
                 batch_x_mark = batch_x_mark.float().to(self.device)
                 batch_y_mark = batch_y_mark.float().to(self.device)
-                batch_cycle = batch_cycle.int().to(self.device)
 
                 # decoder input
                 dec_inp = torch.zeros_like(batch_y[:, -self.args.pred_len:, :]).float()
                 dec_inp = torch.cat([batch_y[:, :self.args.label_len, :], dec_inp], dim=1).float().to(self.device)
                 # encoder - decoder
-                outputs = self.model(batch_x, batch_cycle)
+                outputs = self.model(batch_x)
                 f_dim = -1 if self.args.features == 'MS' else 0
                 outputs = outputs[:, -self.args.pred_len:, f_dim:]
                 batch_y = batch_y[:, -self.args.pred_len:, f_dim:].to(self.device)
@@ -157,7 +140,7 @@ class Exp_Main(Exp_Basic):
 
             self.model.train()
             epoch_time = time.time()
-            for i, (batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle) in enumerate(train_loader):
+            for i, (batch_x, batch_y, batch_x_mark, batch_y_mark) in enumerate(train_loader):
                 iter_count += 1
                 model_optim.zero_grad()
                 batch_x = batch_x.float().to(self.device)
@@ -165,7 +148,6 @@ class Exp_Main(Exp_Basic):
                 batch_y = batch_y.float().to(self.device)
                 batch_x_mark = batch_x_mark.float().to(self.device)
                 batch_y_mark = batch_y_mark.float().to(self.device)
-                batch_cycle = batch_cycle.int().to(self.device)
 
                 # decoder input
                 dec_inp = torch.zeros_like(batch_y[:, -self.args.pred_len:, :]).float()
@@ -173,7 +155,7 @@ class Exp_Main(Exp_Basic):
 
                 # encoder - decoder
                 # temp = time.time() # For computational cost analysis
-                outputs = self.model(batch_x, batch_cycle)
+                outputs = self.model(batch_x)
                 # train_time += time.time() - temp # For computational cost analysis
                 f_dim = -1 if self.args.features == 'MS' else 0
                 outputs = outputs[:, -self.args.pred_len:, f_dim:]
@@ -214,7 +196,6 @@ class Exp_Main(Exp_Basic):
             vali_loss = self.vali(vali_data, vali_loader, mae_criterion, is_test=False)
             test_loss = self.vali(test_data, test_loader, mse_criterion)
 
-
             print("Epoch: {0}, Steps: {1} | Train Loss: {2:.7f} Vali Loss: {3:.7f} Test Loss: {4:.7f}".format(
                 epoch + 1, train_steps, train_loss, vali_loss, test_loss))
             early_stopping(vali_loss, self.model, path)
@@ -234,14 +215,6 @@ class Exp_Main(Exp_Basic):
         self.model.load_state_dict(torch.load(best_model_path))
         os.remove(best_model_path)
 
-        print(f"Total trainable parameters: {count_parameters(self.model)}")
-        if torch.cuda.is_available():
-            input_shape = (self.args.batch_size, self.args.seq_len, self.args.enc_in)
-            mem = get_model_memory(self.model, input_shape, device=self.device)
-            print(f"Peak GPU memory usage (forward only): {mem:.2f} MB")
-        else:
-            print("CUDA not available, cannot measure GPU memory.")
-
         return self.model
 
     def test(self, setting, test=0):
@@ -260,20 +233,19 @@ class Exp_Main(Exp_Basic):
         # test_time = 0 # For computational cost analysis
         self.model.eval()
         with torch.no_grad():
-            for i, (batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle) in enumerate(test_loader):
+            for i, (batch_x, batch_y, batch_x_mark, batch_y_mark) in enumerate(test_loader):
                 batch_x = batch_x.float().to(self.device)
                 batch_y = batch_y.float().to(self.device)
 
                 batch_x_mark = batch_x_mark.float().to(self.device)
                 batch_y_mark = batch_y_mark.float().to(self.device)
-                batch_cycle = batch_cycle.int().to(self.device)
 
                 # decoder input
                 dec_inp = torch.zeros_like(batch_y[:, -self.args.pred_len:, :]).float()
                 dec_inp = torch.cat([batch_y[:, :self.args.label_len, :], dec_inp], dim=1).float().to(self.device)
                 # encoder - decoder
                 # temp = time.time() # For computational cost analysis
-                outputs = self.model(batch_x, batch_cycle)
+                outputs = self.model(batch_x)
                 # test_time += time.time() - temp # For computational cost analysis
 
                 f_dim = -1 if self.args.features == 'MS' else 0
