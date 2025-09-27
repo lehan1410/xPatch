@@ -19,16 +19,17 @@ class MLPMixerBlock(nn.Module):
 
     def forward(self, x):
         # x: [B, num_channels, num_patches]
-        y = self.ln1(x.permute(0, 2, 1)).permute(0, 2, 1)  # [B, num_channels, num_patches]
         # Trộn theo chiều thời gian (num_patches)
+        y = self.ln1(x.permute(0, 2, 1)).permute(0, 2, 1)  # [B, num_channels, num_patches]
         y_time = y.permute(0, 2, 1)                        # [B, num_patches, num_channels]
-        y_time = y_time.transpose(1, 2)                    # [B, num_channels, num_patches]
-        y_time = self.mlp_time(y_time)                     # [B, num_channels, num_patches]
-        y = y + y_time                                     # [B, num_channels, num_patches]
+        y_time = self.mlp_time(y_time)                      # [B, num_patches, num_channels]
+        y = y + y_time.permute(0, 2, 1)                    # [B, num_channels, num_patches]
         # Trộn theo chiều channel
-        y2 = self.ln2(y.permute(0, 2, 1)).permute(0, 2, 1)
-        y2 = self.mlp_channel(y2)
+        y2 = self.ln2(y.permute(0, 2, 1))                  # [B, num_patches, num_channels]
+        y2 = self.mlp_channel(y2)                          # [B, num_patches, num_channels]
+        y2 = y2.permute(0, 2, 1)                           # [B, num_channels, num_patches]
         return y + y2
+
 class Network(nn.Module):
     def __init__(self, seq_len, pred_len, patch_len, stride, padding_patch, c_in):
         super(Network, self).__init__()
