@@ -53,6 +53,7 @@ class Network(nn.Module):
 
         self.fc6 = nn.Linear(pred_len * 2, pred_len)
         self.gelu2 = nn.GELU()
+        self.fc6_reduce = nn.Linear(self.pred_len, self.pred_len // 2)
         self.avgpool2 = nn.AvgPool1d(kernel_size=2)
         self.ln2 = nn.LayerNorm(pred_len // 2)
 
@@ -102,6 +103,7 @@ class Network(nn.Module):
         t = self.ln1(t)
         t = self.fc6(t)
         t = self.gelu2(t)
+        t = self.fc6_reduce(t)
         t = self.ln2(t)
         t = self.fc7(t)
         t = self.gelu3(t)
