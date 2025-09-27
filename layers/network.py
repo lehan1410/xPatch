@@ -27,17 +27,6 @@ class Network(nn.Module):
             padding=self.period_len // 2
         )
 
-        # Depthwise Separable Convolution
-        self.depthwise = nn.Conv1d(
-            in_channels=self.enc_in, out_channels=self.enc_in,
-            kernel_size=3, padding=1, groups=self.enc_in, bias=False
-        )
-        self.pointwise = nn.Conv1d(
-            in_channels=self.enc_in, out_channels=self.enc_in,
-            kernel_size=1, bias=False
-        )
-        self.dw_act = nn.GELU()
-
         self.mlp = nn.Sequential(
             nn.Linear(self.seg_num_x, self.d_model),
             nn.GELU(),
@@ -67,15 +56,11 @@ class Network(nn.Module):
         s_pool = self.pool(s.reshape(-1, 1, self.seq_len))
         s_concat = s_conv + s_pool
         s_concat = s_concat.reshape(-1, self.enc_in, self.seq_len) + s
-
-        # Depthwise Separable Convolution
-        s_dw = self.depthwise(s_concat) + s_concat  # Depthwise
-        s_pw = self.pointwise(self.dw_act(s_dw))  # Pointwise + activation
-
-        s = s_pw.reshape(-1, self.seg_num_x, self.period_len).permute(0, 2, 1)
+        s = s_concat.reshape(-1, self.seg_num_x, self.period_len).permute(0, 2, 1)
         y = self.mlp(s)
         y = y.permute(0, 2, 1).reshape(B, self.enc_in, self.pred_len)
         y = y.permute(0, 2, 1) # [B, pred_len, enc_in]
+
 
         # Linear Stream
         t = self.fc5(t)

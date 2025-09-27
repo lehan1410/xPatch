@@ -25,6 +25,13 @@ def adjust_learning_rate(optimizer, epoch, args):
         w = 10  # warm-up coefficient
         lr_adjust = {epoch: args.learning_rate / (1 + np.exp(-k * (epoch - w))) - args.learning_rate / (1 + np.exp(-k/s * (epoch - w*s)))}
     
+    elif args.lradj == 'cosine':
+        total_epochs = args.train_epochs
+        if epoch < w:
+            lr = args.learning_rate * (epoch + 1) / w
+        else:
+            lr = 0.5 * args.learning_rate * (1 + np.cos(np.pi * (epoch - w) / (total_epochs - w)))
+    
     elif args.lradj == 'constant':
         lr_adjust = {epoch: args.learning_rate}
     elif args.lradj == '3':
