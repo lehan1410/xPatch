@@ -60,7 +60,7 @@ class Network(nn.Module):
         self.gelu3 = nn.GELU()
 
         # Streams Concatination
-        self.fc8 = nn.Linear(pred_len * 2, pred_len)
+        self.fc8 = nn.Linear(pred_len, pred_len)
 
     def forward(self, s, t):
         # s: [Batch, Input, Channel]
