@@ -91,8 +91,8 @@ class Exp_Main(Exp_Basic):
                     # self.ratio = np.array([max(1/np.sqrt(i+1),0.0) for i in range(self.args.pred_len)])
 
                     # Arctangent loss with weight decay
-                    # self.ratio = np.array([-1 * math.atan(i+1) + math.pi/4 + 1 for i in range(self.args.pred_len)])
-                    self.ratio = np.array([1 / (np.log(i+2)) for i in range(self.args.pred_len)])
+                    self.ratio = np.array([-1 * math.atan(i+1) + math.pi/4 + 1 for i in range(self.args.pred_len)])
+                    # self.ratio = np.array([1 / (np.log(i+2)) for i in range(self.args.pred_len)])
                     self.ratio = torch.tensor(self.ratio).unsqueeze(-1).to('cuda')
 
                     pred = outputs*self.ratio
@@ -182,8 +182,8 @@ class Exp_Main(Exp_Basic):
                 # self.ratio = np.array([max(1/np.sqrt(i+1),0.0) for i in range(self.args.pred_len)])
 
                 # Arctangent loss with weight decay
-                # self.ratio = np.array([-1 * math.atan(i+1) + math.pi/4 + 1 for i in range(self.args.pred_len)])
-                self.ratio = np.array([1 / (np.log(i+2)) for i in range(self.args.pred_len)])
+                self.ratio = np.array([-1 * math.atan(i+1) + math.pi/4 + 1 for i in range(self.args.pred_len)])
+                # self.ratio = np.array([1 / (np.log(i+2)) for i in range(self.args.pred_len)])
                 self.ratio = torch.tensor(self.ratio).unsqueeze(-1).to('cuda')
 
                 outputs = outputs * self.ratio
