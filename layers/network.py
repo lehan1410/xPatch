@@ -51,12 +51,7 @@ class Network(nn.Module):
         self.avgpool1 = nn.AvgPool1d(kernel_size=2)
         self.ln1 = nn.LayerNorm(pred_len * 2)
 
-        self.fc6 = nn.Linear(pred_len * 2, pred_len)
-        self.gelu2 = nn.GELU()
-        self.avgpool2 = nn.AvgPool1d(kernel_size=2)
-        self.ln2 = nn.LayerNorm(pred_len // 2)
-
-        self.fc7 = nn.Linear(pred_len // 2, pred_len)
+        self.fc7 = nn.Linear(pred_len * 2, pred_len)
         self.gelu3 = nn.GELU()
 
         # Streams Concatination
@@ -100,11 +95,6 @@ class Network(nn.Module):
         t = self.gelu1(t)
         t = self.avgpool1(t)
         t = self.ln1(t)
-
-        t = self.fc6(t)
-        t = self.gelu2(t)
-        t = self.avgpool2(t)
-        t = self.ln2(t)
 
         t = self.fc7(t)
         t = self.gelu3(t)
