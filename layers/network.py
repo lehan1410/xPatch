@@ -1,16 +1,6 @@
 import torch
 from torch import nn
 
-class PeriodGLUBlock(nn.Module):
-    def __init__(self, period_len, num_period):
-        super().__init__()
-        self.linear = nn.Linear(num_period, num_period * 2)
-
-    def forward(self, x):
-        # x: [B, period_len, num_period]
-        out = self.linear(x)  # [B, period_len, num_period*2]
-        a, b = out.chunk(2, dim=-1)
-        return a * torch.sigmoid(b)
 
 class Network(nn.Module):
     def __init__(self, seq_len, pred_len, patch_len, stride, padding_patch, c_in):
@@ -38,8 +28,6 @@ class Network(nn.Module):
         #     padding=self.period_len // 2
         # )
 
-        # # Sử dụng GLU block thay cho gating
-        self.period_glu = PeriodGLUBlock(self.period_len, self.seg_num_x)
 
         self.mlp = nn.Sequential(
             nn.Linear(self.seg_num_x, self.d_model),
@@ -48,18 +36,14 @@ class Network(nn.Module):
         )
 
         # Linear Stream
-        self.trend_conv = nn.Sequential(
-            nn.Conv1d(in_channels=1, out_channels=8, kernel_size=5, dilation=1, padding=2),
-            nn.GELU(),
-            nn.Conv1d(in_channels=8, out_channels=8, kernel_size=5, dilation=2, padding=4),
-            nn.GELU(),
-            nn.Conv1d(in_channels=8, out_channels=1, kernel_size=3, dilation=1, padding=1),
-            nn.GELU()
-        )
-        self.trend_linear = nn.Sequential(
-            nn.Flatten(),
-            nn.Linear(seq_len, pred_len)
-        )
+        self.fc5 = nn.Linear(seq_len, pred_len * 2)
+        # self.avgpool1 = nn.AvgPool1d(kernel_size=2)
+        self.gelu1 = nn.GELU()
+        self.ln1 = nn.LayerNorm(pred_len * 2)
+        self.fc7 = nn.Linear(pred_len * 2, pred_len)
+
+        # Streams Concatination
+        self.fc8 = nn.Linear(pred_len, pred_len)
 
     def forward(self, s, t):
         # s: [Batch, Input, Channel]
@@ -73,17 +57,27 @@ class Network(nn.Module):
         t = torch.reshape(t, (B*C, I))
         s = self.conv1d(s.reshape(-1, 1, self.seq_len)).reshape(-1, self.enc_in, self.seq_len) + s
         s = s.reshape(-1, self.seg_num_x, self.period_len).permute(0, 2, 1)
-        s = self.period_glu(s)
         y = self.mlp(s)
         y = y.permute(0, 2, 1).reshape(B, self.enc_in, self.pred_len)
         y = y.permute(0, 2, 1)
 
         # Linear Stream
-        trend = t.unsqueeze(1)  # [B*C, 1, seq_len]
-        trend_feat = self.trend_conv(trend)  # [B*C, 1, seq_len]
-        trend_feat = trend_feat.squeeze(1)   # [B*C, seq_len]
-        trend_pred = self.trend_linear(trend_feat)  # [B*C, pred_len]
-        trend_pred = trend_pred.view(B, C, self.pred_len)
-        trend_pred = trend_pred.permute(0, 2, 1)
+        t = self.fc5(t)
+        t = self.gelu1(t)
+        t = self.ln1(t)
 
-        return y + trend_pred
+        # t = self.fc6(t)
+        # t = self.avgpool2(t)
+        # t = self.ln2(t)
+
+        t = self.fc7(t)
+
+
+        t = self.fc8(t)
+
+        # Channel concatination
+        t = torch.reshape(t, (B, C, self.pred_len)) # [Batch, Channel, Output]
+
+        t = t.permute(0,2,1)
+
+        return y + t
