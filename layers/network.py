@@ -33,12 +33,17 @@ class Network(nn.Module):
             nn.Linear(self.d_model, self.seg_num_y)
         )
 
+        self.global_conv = nn.Conv1d(
+            in_channels=self.enc_in, out_channels=self.enc_in,
+            kernel_size=5, padding=2, groups=1, bias=True
+        )
+
         # Linear Stream
         self.fc5 = nn.Linear(seq_len, pred_len * 2)
         self.gelu1 = nn.GELU()
         self.ln1 = nn.LayerNorm(pred_len * 2)
         self.fc7 = nn.Linear(pred_len * 2, pred_len)
-        # self.fc8 = nn.Linear(pred_len, pred_len)
+        self.fc8 = nn.Linear(pred_len, pred_len)
 
     def forward(self, s, t):
         # s: [Batch, Input, Channel]
@@ -59,6 +64,7 @@ class Network(nn.Module):
         s = s_concat.reshape(-1, self.seg_num_x, self.period_len).permute(0, 2, 1)
         y = self.mlp(s)
         y = y.permute(0, 2, 1).reshape(B, self.enc_in, self.pred_len)
+        y = self.global_conv(y)
         y = y.permute(0, 2, 1) # [B, pred_len, enc_in]
 
 
@@ -67,7 +73,7 @@ class Network(nn.Module):
         t = self.gelu1(t)
         t = self.ln1(t)
         t = self.fc7(t)
-        # t = self.fc8(t)
+        t = self.fc8(t)
         t = torch.reshape(t, (B, C, self.pred_len))
         t = t.permute(0,2,1) # [Batch, Output, Channel] = [B, pred_len, C]
 
