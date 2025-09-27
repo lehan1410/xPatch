@@ -20,17 +20,16 @@ class MLPMixerBlock(nn.Module):
     def forward(self, x):
         # x: [B, num_channels, num_patches]
         # Trộn theo chiều thời gian (num_patches)
-        y = self.ln1(x)  # [B, num_channels, num_patches]
-        y_time = y.transpose(1, 2)  # [B, num_patches, num_channels]
-        y_time = self.mlp_time(y_time)  # [B, num_patches, num_channels]
-        y_time = y_time.transpose(1, 2)  # [B, num_channels, num_patches]
-        y = x + y_time  # residual
+        y = self.ln1(x.transpose(1, 2)).transpose(1, 2)  # [B, num_channels, num_patches]
+        y_time = y.transpose(1, 2)                       # [B, num_patches, num_channels]
+        y_time = self.mlp_time(y_time)                    # [B, num_patches, num_channels]
+        y_time = y_time.transpose(1, 2)                   # [B, num_channels, num_patches]
+        y = x + y_time                                   # residual
         # Trộn theo chiều channel
-        y2 = self.ln2(y)
-        y2 = y2  # [B, num_channels, num_patches]
-        y2 = y2.transpose(1, 2)  # [B, num_patches, num_channels]
-        y2 = self.mlp_channel(y2)  # [B, num_patches, num_channels]
-        y2 = y2.transpose(1, 2)  # [B, num_channels, num_patches]
+        y2 = self.ln2(y)                                 # [B, num_channels, num_patches]
+        y2 = y2.transpose(1, 2)                          # [B, num_patches, num_channels]
+        y2 = self.mlp_channel(y2)                        # [B, num_patches, num_channels]
+        y2 = y2.transpose(1, 2)                          # [B, num_channels, num_patches]
         return y + y2
 
 class Network(nn.Module):
