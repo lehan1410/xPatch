@@ -4,32 +4,32 @@ from torch import nn
 class MLPMixerBlock(nn.Module):
     def __init__(self, num_patches, num_channels, hidden_dim=128):
         super().__init__()
-        self.ln1 = nn.LayerNorm(num_patches)
+        self.ln1 = nn.LayerNorm(num_channels)
         self.mlp_time = nn.Sequential(
-            nn.Linear(num_channels, hidden_dim),
-            nn.GELU(),
-            nn.Linear(hidden_dim, num_channels)
-        )
-        self.ln2 = nn.LayerNorm(num_channels)
-        self.mlp_channel = nn.Sequential(
             nn.Linear(num_patches, hidden_dim),
             nn.GELU(),
             nn.Linear(hidden_dim, num_patches)
+        )
+        self.ln2 = nn.LayerNorm(num_channels)
+        self.mlp_channel = nn.Sequential(
+            nn.Linear(num_channels, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, num_channels)
         )
 
     def forward(self, x):
         # x: [B, num_channels, num_patches]
         # Trộn theo chiều thời gian (num_patches)
-        y = self.ln1(x.transpose(1, 2)).transpose(1, 2)  # [B, num_channels, num_patches]
-        y_time = y.transpose(1, 2)                       # [B, num_patches, num_channels]
+        y = self.ln1(x)                                   # [B, num_channels, num_patches]
+        y_time = y.transpose(1, 2)                        # [B, num_patches, num_channels]
         y_time = self.mlp_time(y_time)                    # [B, num_patches, num_channels]
         y_time = y_time.transpose(1, 2)                   # [B, num_channels, num_patches]
-        y = x + y_time                                   # residual
+        y = x + y_time                                    # residual
         # Trộn theo chiều channel
-        y2 = self.ln2(y)                                 # [B, num_channels, num_patches]
-        y2 = y2.transpose(1, 2)                          # [B, num_patches, num_channels]
-        y2 = self.mlp_channel(y2)                        # [B, num_patches, num_channels]
-        y2 = y2.transpose(1, 2)                          # [B, num_channels, num_patches]
+        y2 = self.ln2(y)                                  # [B, num_channels, num_patches]
+        y2 = y2.transpose(1, 2)                           # [B, num_patches, num_channels]
+        y2 = self.mlp_channel(y2)                         # [B, num_patches, num_channels]
+        y2 = y2.transpose(1, 2)                           # [B, num_channels, num_patches]
         return y + y2
 
 class Network(nn.Module):
