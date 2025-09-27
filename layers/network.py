@@ -39,7 +39,7 @@ class Network(nn.Module):
         # )
 
         # # Sử dụng GLU block thay cho gating
-        # self.period_glu = PeriodGLUBlock(self.period_len, self.seg_num_x)
+        self.period_glu = PeriodGLUBlock(self.period_len, self.seg_num_x)
 
         self.mlp = nn.Sequential(
             nn.Linear(self.seg_num_x, self.d_model),
@@ -73,6 +73,7 @@ class Network(nn.Module):
         t = torch.reshape(t, (B*C, I))
         s = self.conv1d(s.reshape(-1, 1, self.seq_len)).reshape(-1, self.enc_in, self.seq_len) + s
         s = s.reshape(-1, self.seg_num_x, self.period_len).permute(0, 2, 1)
+        s = self.period_glu(s)
         y = self.mlp(s)
         y = y.permute(0, 2, 1).reshape(B, self.enc_in, self.pred_len)
         y = y.permute(0, 2, 1)
