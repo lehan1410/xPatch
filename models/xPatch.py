@@ -36,7 +36,7 @@ class Model(nn.Module):
         # self.net_mlp = NetworkMLP(seq_len, pred_len) # For ablation study with MLP-only stream
         # self.net_cnn = NetworkCNN(seq_len, pred_len, patch_len, stride, padding_patch) # For ablation study with CNN-only stream
 
-    def forward(self, x):
+    def forward(self, x, cycle_index=None):
         # x: [Batch, Input, Channel]
 
         # Normalization
@@ -49,7 +49,7 @@ class Model(nn.Module):
             # x = self.net_cnn(x) # For ablation study with CNN-only stream
         else:
             seasonal_init, trend_init = self.decomp(x)
-            x = self.net(seasonal_init, trend_init)
+            x = self.net(seasonal_init, trend_init, cycle_index)
 
         # Denormalization
         if self.revin:
