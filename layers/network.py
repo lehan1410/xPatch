@@ -69,7 +69,7 @@ class Network(nn.Module):
         s_concat = s_concat.reshape(-1, self.enc_in, self.seq_len) + s
 
         # Depthwise Separable Convolution
-        s_dw = self.depthwise(s_concat)           # Depthwise
+        s_dw = self.depthwise(s_concat) + s_concat  # Depthwise
         s_pw = self.pointwise(self.dw_act(s_dw))  # Pointwise + activation
 
         s = s_pw.reshape(-1, self.seg_num_x, self.period_len).permute(0, 2, 1)
