@@ -12,12 +12,29 @@ import os
 import time
 import warnings
 import math
+import psutil
 
 warnings.filterwarnings('ignore')
 
 class Exp_Main(Exp_Basic):
     def __init__(self, args):
         super(Exp_Main, self).__init__(args)
+
+    def print_model_info(self):
+        # Số lượng tham số
+        total_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+        print(f"Total trainable parameters: {total_params:,}")
+
+        # Bộ nhớ tiêu thụ (RAM)
+        process = psutil.Process(os.getpid())
+        mem_MB = process.memory_info().rss / 1024 / 1024
+        print(f"Memory usage (RAM): {mem_MB:.2f} MB")
+
+        # Nếu dùng GPU
+        if torch.cuda.is_available():
+            gpu_mem = torch.cuda.max_memory_allocated() / 1024 / 1024
+            print(f"Max GPU memory allocated: {gpu_mem:.2f} MB")
+
 
     def _build_model(self):
         model_dict = {
@@ -111,6 +128,8 @@ class Exp_Main(Exp_Basic):
         model_optim = self._select_optimizer()
         # criterion = self._select_criterion() # For MSE criterion
         mse_criterion, mae_criterion = self._select_criterion()
+        self.print_model_info()
+        epoch_times = []
 
         # # CARD's cosine learning rate decay with warmup
         # self.warmup_epochs = self.args.warmup_epochs
@@ -211,6 +230,9 @@ class Exp_Main(Exp_Basic):
             # print('Beta:', self.model.decomp.ma.beta)   # Print the learned beta
 
         # print("Training time: {}".format(np.sum(train_times)/len(train_times))) # For computational cost analysis
+        avg_epoch_time = np.mean(epoch_times)
+        print(f"Average epoch time: {avg_epoch_time:.2f} seconds")
+
         best_model_path = path + '/' + 'checkpoint.pth'
         self.model.load_state_dict(torch.load(best_model_path))
         os.remove(best_model_path)
