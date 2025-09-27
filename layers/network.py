@@ -6,7 +6,7 @@ class MLPMixerBlock(nn.Module):
         super().__init__()
         # Token-mixing MLP (trộn giữa các period)
         self.token_mlp = nn.Sequential(
-            nn.LayerNorm(period_len),  # Sửa lại thành period_len
+            nn.LayerNorm(num_period),  # Sửa lại thành period_len
             nn.Linear(period_len, hidden_dim),
             nn.GELU(),
             nn.Linear(hidden_dim, period_len)
