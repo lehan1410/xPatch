@@ -83,7 +83,9 @@ class Network(nn.Module):
 
         s = s_concat.reshape(-1, self.seg_num_x, self.period_len).permute(0, 2, 1)  # [B, period_len, num_period]
         s = self.norm(s)
+        s_res = s
         s = self.period_glu(s)  # GLU block
+        s = s + s_res
         y = self.mlp(s)
         y = y.permute(0, 2, 1).reshape(B, self.enc_in, self.pred_len)
         y = y.permute(0, 2, 1)
