@@ -1,17 +1,6 @@
 import torch
 from torch import nn
 
-class PeriodGLUBlock(nn.Module):
-    def __init__(self, period_len, num_period):
-        super().__init__()
-        self.linear = nn.Linear(num_period, num_period * 2)
-
-    def forward(self, x):
-        # x: [B, period_len, num_period]
-        out = self.linear(x)  # [B, period_len, num_period*2]
-        a, b = out.chunk(2, dim=-1)
-        return a * torch.sigmoid(b)
-
 class Network(nn.Module):
     def __init__(self, seq_len, pred_len, patch_len, stride, padding_patch, c_in):
         super(Network, self).__init__()
@@ -32,12 +21,16 @@ class Network(nn.Module):
             stride=1, padding=self.period_len // 2,
             padding_mode="zeros", bias=False
         )
+        self.pool = nn.AvgPool1d(
+            kernel_size=1 + 2 * (self.period_len // 2),
+            stride=1,
+            padding=self.period_len // 2
+        )
 
-        self.flatten = nn.Flatten(start_dim=1)
         self.mlp = nn.Sequential(
             nn.Linear(self.seg_num_x, self.d_model),
             nn.GELU(),
-            self.flatten,  # [B, d_model, period_len] -> [B, d_model * period_len]
+            nn.Flatten(start_dim=1),
             nn.BatchNorm1d(self.d_model * self.period_len),
             nn.Linear(self.d_model * self.period_len, self.d_model),
             nn.GELU(),
@@ -45,17 +38,10 @@ class Network(nn.Module):
         )
 
         # Linear Stream
-        self.fc5 = nn.Linear(seq_len, pred_len * 4)
-        self.avgpool1 = nn.AvgPool1d(kernel_size=2)
+        self.fc5 = nn.Linear(seq_len, pred_len * 2)
+        self.gelu1 = nn.GELU()
         self.ln1 = nn.LayerNorm(pred_len * 2)
-
-        self.fc6 = nn.Linear(pred_len * 2, pred_len)
-        self.avgpool2 = nn.AvgPool1d(kernel_size=2)
-        self.ln2 = nn.LayerNorm(pred_len // 2)
-
-        self.fc7 = nn.Linear(pred_len // 2, pred_len)
-
-        # Streams Concatination
+        self.fc7 = nn.Linear(pred_len * 2, pred_len)
         self.fc8 = nn.Linear(pred_len, pred_len)
 
     def forward(self, s, t):
@@ -68,30 +54,25 @@ class Network(nn.Module):
         C = s.shape[1]
         I = s.shape[2]
         t = torch.reshape(t, (B*C, I))
-        
-        s = self.conv1d(s.reshape(-1, 1, self.seq_len)).reshape(-1, self.enc_in, self.seq_len) + s
-        s = s.reshape(-1, self.seg_num_x, self.period_len).permute(0, 2, 1)
+
+        # Seasonal Stream: Conv1d + Pooling
+        s_conv = self.conv1d(s.reshape(-1, 1, self.seq_len))
+        s_pool = self.pool(s.reshape(-1, 1, self.seq_len))
+        s_concat = s_conv + s_pool
+        s_concat = s_concat.reshape(-1, self.enc_in, self.seq_len) + s
+        s = s_concat.reshape(-1, self.seg_num_x, self.period_len).permute(0, 2, 1)
         y = self.mlp(s)
         y = y.permute(0, 2, 1).reshape(B, self.enc_in, self.pred_len)
+        y = y.permute(0, 2, 1) # [B, pred_len, enc_in]
 
-        y = y.permute(0, 2, 1)
 
         # Linear Stream
         t = self.fc5(t)
-        t = self.avgpool1(t)
+        t = self.gelu1(t)
         t = self.ln1(t)
-
-        t = self.fc6(t)
-        t = self.avgpool2(t)
-        t = self.ln2(t)
-
         t = self.fc7(t)
-
         t = self.fc8(t)
-
-        # Channel concatination
-        t = torch.reshape(t, (B, C, self.pred_len)) # [Batch, Channel, Output]
-
-        t = t.permute(0,2,1)
+        t = torch.reshape(t, (B, C, self.pred_len))
+        t = t.permute(0,2,1) # [Batch, Output, Channel] = [B, pred_len, C]
 
         return t + y
