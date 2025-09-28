@@ -80,8 +80,11 @@ class Network(nn.Module):
         s = s_concat + s[..., :min_len]
         s = s.reshape(-1, self.seg_num_x, self.period_len).permute(0, 2, 1)
         y = self.mlp(s)
-        y = y.permute(0, 2, 1).reshape(B, self.enc_in, self.pred_len)
-        y = y.permute(0, 2, 1) # [B, pred_len, enc_in]
+        y = y.permute(0, 2, 1)  # [B*enc_in, seg_num_y, period_len]
+        y = y.reshape(B, self.enc_in, self.seg_num_y, self.period_len)
+        y = y.permute(0, 1, 3, 2).contiguous()  # [B, enc_in, period_len, seg_num_y]
+        y = y.view(B, self.enc_in, self.pred_len)  # [B, enc_in, pred_len]
+        y = y.permute(0, 2, 1)  # [B, pred_len, enc_in]
 
 
         # Linear Stream
