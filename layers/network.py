@@ -13,15 +13,15 @@ class PeriodGLUBlock(nn.Module):
         return a * torch.sigmoid(b)
 
 class Network(nn.Module):
-    def __init__(self, seq_len, pred_len, patch_len, stride, padding_patch, c_in):
+    def __init__(self, seq_len, pred_len, c_in, period_len, d_model):
         super(Network, self).__init__()
 
         # Parameters
         self.pred_len = pred_len
         self.seq_len = seq_len
         self.enc_in  = c_in
-        self.period_len = 24
-        self.d_model = 128
+        self.period_len = period_len
+        self.d_model = d_model
 
         self.seg_num_x = self.seq_len // self.period_len
         self.seg_num_y = self.pred_len // self.period_len
