@@ -32,7 +32,7 @@ class Network(nn.Module):
             stride=1, padding=self.period_len // 2,
             padding_mode="zeros", bias=False
         )
-        self.pool = nn.AvgPool1d(
+        self.avg = nn.AvgPool1d(
             kernel_size=1 + 2 * (self.period_len // 2),
             stride=1,
             padding=self.period_len // 2
@@ -70,7 +70,7 @@ class Network(nn.Module):
         I = s.shape[2]
         t = torch.reshape(t, (B*C, I))
         s_conv = self.conv1d(s.reshape(-1, 1, self.seq_len))
-        pooled = self.avg_pool(s.reshape(-1, 1, self.seq_len)) + self.max_pool(s.reshape(-1, 1, self.seq_len))
+        pooled = self.avg(s.reshape(-1, 1, self.seq_len)) + self.max_pool(s.reshape(-1, 1, self.seq_len))
         s_concat = s_conv + pooled
         s_concat = s_concat.reshape(-1, self.enc_in, self.seq_len) + s
         s = s_concat.reshape(-1, self.seg_num_x, self.period_len).permute(0, 2, 1)  # [B, period_len, num_period]
