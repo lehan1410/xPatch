@@ -29,7 +29,9 @@ class Network(nn.Module):
 
         self.mlp = nn.Sequential(
             nn.Linear(self.seg_num_x, self.d_model),
+            nn.LayerNorm(self.d_model),
             nn.GELU(),
+            nn.Dropout(0.2), 
             nn.Linear(self.d_model, self.seg_num_y)
         )
 
@@ -82,9 +84,8 @@ class Network(nn.Module):
 
         t = self.fc8(t)
 
-        # Channel concatination
-        t = torch.reshape(t, (B, C, self.pred_len)) # [Batch, Channel, Output]
+        t = torch.reshape(t, (B, C, self.pred_len))
 
-        t = t.permute(0,2,1) # [Batch, Output, Channel] = [B, pred_len, C]
+        t = t.permute(0,2,1) 
 
         return t + y

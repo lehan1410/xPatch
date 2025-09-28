@@ -190,7 +190,8 @@ class Exp_Main(Exp_Basic):
                 outputs = outputs * self.ratio
                 batch_y = batch_y * self.ratio
 
-                loss = mae_criterion(outputs, batch_y)
+                # loss = mae_criterion(outputs, batch_y)
+                loss = 0.5 * mse_criterion(outputs, batch_y) + 0.5 * mae_criterion(outputs, batch_y)
 
                 # loss = criterion(outputs, batch_y) # For MSE criterion
 
@@ -208,10 +209,12 @@ class Exp_Main(Exp_Basic):
                 model_optim.step()
 
             # train_times.append(train_time/len(train_loader)) # For computational cost analysis
+            epoch_duration = time.time() - epoch_time
+            epoch_times.append(epoch_duration)  
             print("Epoch: {} cost time: {}".format(epoch + 1, time.time() - epoch_time))
             train_loss = np.average(train_loss)
             # vali_loss = self.vali(vali_data, vali_loader, criterion) # For MSE criterion
-            # test_loss = self.vali(test_data, test_loader, criterion) # For MSE criterion
+            # test_loss = self.vali(test_data, test_loader, critericoston) # For MSE criterion
             vali_loss = self.vali(vali_data, vali_loader, mae_criterion, is_test=False)
             test_loss = self.vali(test_data, test_loader, mse_criterion)
 
