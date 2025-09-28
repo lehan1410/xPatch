@@ -50,15 +50,15 @@ class Network(nn.Module):
         )
 
         # Linear Stream
-        self.trend_stream = nn.Sequential(
-            nn.Conv1d(1, 8, kernel_size=9, padding=4),
+        self.trend_pool = nn.AdaptiveAvgPool1d(1)
+        self.linear_stream = nn.Sequential(
+            nn.LayerNorm(seq_len),
+            nn.Linear(seq_len, seq_len // 2),
             nn.GELU(),
-            nn.Conv1d(8, 16, kernel_size=7, padding=3),
+            nn.LayerNorm(seq_len // 2),
+            nn.Linear(seq_len // 2, self.pred_len),
             nn.GELU(),
-            nn.Conv1d(16, 1, kernel_size=5, padding=2),
-            nn.GELU(),
-            nn.Flatten(start_dim=1),
-            nn.Linear(seq_len, self.pred_len)
+            nn.LayerNorm(self.pred_len)
         )
 
     def forward(self, s, t):
@@ -81,16 +81,16 @@ class Network(nn.Module):
 
         s = s_concat.reshape(-1, self.seg_num_x, self.period_len).permute(0, 2, 1)  # [B, period_len, num_period]
         s = self.norm(s)
-        s_res = s
         s = self.period_glu(s)  # GLU block
-        s = s + s_res
         y = self.mlp(s)
         y = y.permute(0, 2, 1).reshape(B, self.enc_in, self.pred_len)
         y = y.permute(0, 2, 1)
 
-        # Linear Stream
-        trend = self.trend_stream(t.unsqueeze(1))  # [B*C, 1, seq_len] -> [B*C, pred_len]
+        pooled = self.trend_pool(t.unsqueeze(1)).squeeze(-1)  # [B*C, 1]
+        trend = self.linear_stream(t)                         # [B*C, pred_len]
+        # Cộng thông tin global pooling vào từng bước dự báo
+        trend = trend + pooled.expand_as(trend)
         trend = trend.reshape(B, C, self.pred_len)
-        t = trend.permute(0, 2, 1) # [Batch, Output, Channel] = [B, pred_len, C]
+        t = trend.permute(0, 2, 1)
 
         return t + y
