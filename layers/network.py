@@ -38,9 +38,6 @@ class Network(nn.Module):
             padding=self.period_len // 2
         )
 
-        self.global_pool = nn.AdaptiveAvgPool1d(1)
-        self.norm = nn.LayerNorm([self.period_len, self.seg_num_x])
-
         self.period_glu = PeriodGLUBlock(self.period_len, self.seg_num_x)
 
         self.mlp = nn.Sequential(
@@ -75,22 +72,18 @@ class Network(nn.Module):
         s_pool = self.pool(s.reshape(-1, 1, self.seq_len))
         s_concat = s_conv + s_pool
         s_concat = s_concat.reshape(-1, self.enc_in, self.seq_len) + s
-
-        global_feat = self.global_pool(s_concat).expand_as(s_concat)
-        s_concat = s_concat + global_feat
-
         s = s_concat.reshape(-1, self.seg_num_x, self.period_len).permute(0, 2, 1)  # [B, period_len, num_period]
-        s = self.norm(s)
         s = self.period_glu(s)  # GLU block
         y = self.mlp(s)
         y = y.permute(0, 2, 1).reshape(B, self.enc_in, self.pred_len)
         y = y.permute(0, 2, 1)
 
+        # Linear Stream
         pooled = self.trend_pool(t.unsqueeze(1)).squeeze(-1)  # [B*C, 1]
         trend = self.linear_stream(t)                         # [B*C, pred_len]
         # Cộng thông tin global pooling vào từng bước dự báo
         trend = trend + pooled.expand_as(trend)
         trend = trend.reshape(B, C, self.pred_len)
-        t = trend.permute(0, 2, 1)
+        t = trend.permute(0, 2, 1) # [Batch, Output, Channel] = [B, pred_len, C]
 
         return t + y
