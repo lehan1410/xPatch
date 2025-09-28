@@ -79,11 +79,8 @@ class Network(nn.Module):
         y = y.permute(0, 2, 1)
 
         # Linear Stream
-        trend = t.unsqueeze(1)  # [B*C, 1, seq_len]
-        trend_feat = self.trend_conv(trend)  # [B*C, 1, seq_len]
-        trend_feat = trend_feat.squeeze(1)   # [B*C, seq_len]
-        trend_pred = self.trend_linear(trend_feat)  # [B*C, pred_len]
-        trend_pred = trend_pred.view(B, C, self.pred_len)
-        trend_pred = trend_pred.permute(0, 2, 1)
+        t = self.linear_stream(t)
+        t = torch.reshape(t, (B, C, self.pred_len))
+        t = t.permute(0,2,1) # [Batch, Output, Channel] = [B, pred_len, C]
 
-        return y + trend_pred
+        return t + y
