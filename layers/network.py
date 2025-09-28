@@ -43,10 +43,6 @@ class Network(nn.Module):
         self.mlp = nn.Sequential(
             nn.Linear(self.seg_num_x, self.d_model),
             nn.GELU(),
-            nn.Flatten(start_dim=1),
-            nn.BatchNorm1d(self.d_model * self.period_len),
-            nn.Linear(self.d_model * self.period_len, self.d_model),
-            nn.GELU(),
             nn.Linear(self.d_model, self.seg_num_y)
         )
 
