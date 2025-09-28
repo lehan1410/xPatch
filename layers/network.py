@@ -49,14 +49,18 @@ class Network(nn.Module):
         # Linear Stream
         self.linear_stream = nn.Sequential(
             nn.LayerNorm(seq_len),
-            nn.AdaptiveAvgPool1d(seq_len // 2),      # [B*C, 1, seq_len] -> [B*C, 1, seq_len//2]
+            nn.Linear(seq_len, seq_len // 2),
             nn.GELU(),
-            nn.AdaptiveAvgPool1d(seq_len // 4),      # [B*C, 1, seq_len//2] -> [B*C, 1, seq_len//4]
+            nn.Unflatten(1, (1, seq_len // 2)),                # [B*C, seq_len//2] -> [B*C, 1, seq_len//2]
+            nn.AdaptiveAvgPool1d(seq_len // 4),                # [B*C, 1, seq_len//2] -> [B*C, 1, seq_len//4]
+            nn.Flatten(start_dim=1),                           # [B*C, 1, seq_len//4] -> [B*C, seq_len//4]
             nn.GELU(),
-            nn.Flatten(start_dim=1),                 # [B*C, 1, seq_len//4] -> [B*C, seq_len//4]
-            nn.Linear(seq_len // 4, pred_len),
+            nn.Linear(seq_len // 4, pred_len * 2),
             nn.GELU(),
-            nn.LayerNorm(pred_len)
+            nn.LayerNorm(pred_len * 2),
+            nn.Linear(pred_len * 2, pred_len),
+            nn.GELU(),
+            nn.Linear(pred_len, pred_len)
         )
 
     def forward(self, s, t):
@@ -80,9 +84,8 @@ class Network(nn.Module):
         y = y.permute(0, 2, 1)
 
         # Linear Stream
-        t = t.unsqueeze(1)
         t = self.linear_stream(t)
-        t = t.reshape(B, C, self.pred_len)
+        t = torch.reshape(t, (B, C, self.pred_len))
         t = t.permute(0,2,1) # [Batch, Output, Channel] = [B, pred_len, C]
 
         return t + y
