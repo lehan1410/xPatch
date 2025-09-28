@@ -31,7 +31,6 @@ class Network(nn.Module):
             nn.Linear(self.seg_num_x, self.d_model),
             nn.LayerNorm(self.d_model),
             nn.GELU(),
-            nn.Dropout(0.2),
             nn.Linear(self.d_model, self.seg_num_y)
         )
 

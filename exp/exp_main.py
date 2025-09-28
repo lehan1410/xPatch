@@ -21,16 +21,13 @@ class Exp_Main(Exp_Basic):
         super(Exp_Main, self).__init__(args)
 
     def print_model_info(self):
-        # Số lượng tham số
         total_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
         print(f"Total trainable parameters: {total_params:,}")
 
-        # Bộ nhớ tiêu thụ (RAM)
         process = psutil.Process(os.getpid())
         mem_MB = process.memory_info().rss / 1024 / 1024
         print(f"Memory usage (RAM): {mem_MB:.2f} MB")
 
-        # Nếu dùng GPU
         if torch.cuda.is_available():
             gpu_mem = torch.cuda.max_memory_allocated() / 1024 / 1024
             print(f"Max GPU memory allocated: {gpu_mem:.2f} MB")
@@ -184,7 +181,13 @@ class Exp_Main(Exp_Basic):
                 # self.ratio = np.array([max(1/np.sqrt(i+1),0.0) for i in range(self.args.pred_len)])
 
                 # Arctangent loss with weight decay
-                self.ratio = np.array([-1 * math.atan(i+1) + math.pi/4 + 1 for i in range(self.args.pred_len)])
+                # self.ratio = np.array([-1 * math.atan(i+1) + math.pi/4 + 1 for i in range(self.args.pred_len)])
+                alpha = 0.02  # Điều chỉnh tốc độ giảm
+                beta = 0.8    # Trọng số tối thiểu
+                self.ratio = np.array([
+                    beta + (1 - beta) * np.exp(-alpha * i) 
+                    for i in range(self.args.pred_len)
+                ])
                 self.ratio = torch.tensor(self.ratio).unsqueeze(-1).to('cuda')
 
                 outputs = outputs * self.ratio
