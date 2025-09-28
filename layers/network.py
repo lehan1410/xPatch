@@ -91,6 +91,6 @@ class Network(nn.Module):
         # Linear Stream
         trend = self.trend_stream(t.unsqueeze(1))  # [B*C, 1, seq_len] -> [B*C, pred_len]
         trend = trend.reshape(B, C, self.pred_len)
-        trend = trend.permute(0, 2, 1) # [Batch, Output, Channel] = [B, pred_len, C]
+        t = trend.permute(0, 2, 1) # [Batch, Output, Channel] = [B, pred_len, C]
 
         return t + y
