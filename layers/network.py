@@ -43,22 +43,19 @@ class Network(nn.Module):
         self.mlp = nn.Sequential(
             nn.Linear(self.seg_num_x, self.d_model),
             nn.GELU(),
+            nn.Flatten(start_dim=1),
+            nn.BatchNorm1d(self.d_model * self.period_len),
+            nn.Linear(self.d_model * self.period_len, self.d_model),
+            nn.GELU(),
             nn.Linear(self.d_model, self.seg_num_y)
         )
 
         # Linear Stream
-        self.linear_stream = nn.Sequential(
-            nn.Linear(seq_len, seq_len // 2),
-            nn.GELU(),
-            nn.Linear(seq_len // 2, seq_len // 4),
-            nn.GELU(),
-            nn.Linear(seq_len // 4, pred_len * 2),
-            nn.GELU(),
-            nn.LayerNorm(pred_len * 2),
-            nn.Linear(pred_len * 2, pred_len),
-            nn.GELU(),
-            nn.Linear(pred_len, pred_len)
-        )
+        self.fc5 = nn.Linear(seq_len, pred_len * 2)
+        self.gelu1 = nn.GELU()
+        self.ln1 = nn.LayerNorm(pred_len * 2)
+        self.fc7 = nn.Linear(pred_len * 2, pred_len)
+        self.fc8 = nn.Linear(pred_len, pred_len)
 
     def forward(self, s, t):
         # s: [Batch, Input, Channel]
@@ -81,7 +78,11 @@ class Network(nn.Module):
         y = y.permute(0, 2, 1)
 
         # Linear Stream
-        t = self.linear_stream(t)
+        t = self.fc5(t)
+        t = self.gelu1(t)
+        t = self.ln1(t)
+        t = self.fc7(t)
+        t = self.fc8(t)
         t = torch.reshape(t, (B, C, self.pred_len))
         t = t.permute(0,2,1) # [Batch, Output, Channel] = [B, pred_len, C]
 
