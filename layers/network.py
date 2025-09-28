@@ -77,7 +77,7 @@ class Network(nn.Module):
         s_conv = s_conv1 + s_conv2 + s_conv3
         s_concat = s_conv + s_pool
         s_concat = s_concat.reshape(-1, self.enc_in, min_len)
-        s = s_concat[..., :self.seq_len] + s[..., :self.seq_len]
+        s = s_concat + s[..., :min_len]
         s = s.reshape(-1, self.seg_num_x, self.period_len).permute(0, 2, 1)
         y = self.mlp(s)
         y = y.permute(0, 2, 1).reshape(B, self.enc_in, self.pred_len)
