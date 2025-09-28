@@ -193,8 +193,8 @@ class Exp_Main(Exp_Basic):
                 outputs = outputs * self.ratio
                 batch_y = batch_y * self.ratio
 
-                # loss = mae_criterion(outputs, batch_y)
-                loss = 0.5 * mse_criterion(outputs, batch_y) + 0.5 * mae_criterion(outputs, batch_y)
+                loss = mae_criterion(outputs, batch_y)
+                # loss = 0.5 * mse_criterion(outputs, batch_y) + 0.5 * mae_criterion(outputs, batch_y)
 
                 # loss = criterion(outputs, batch_y) # For MSE criterion
 
