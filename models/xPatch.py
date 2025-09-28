@@ -16,6 +16,8 @@ class Model(nn.Module):
         seq_len = configs.seq_len   # lookback window L
         pred_len = configs.pred_len # prediction length (96, 192, 336, 720)
         c_in = configs.enc_in       # input channels
+        d_model = configs.d_model    # dimension of model
+        period_len = configs.period_len  # period length
 
         # Patching
         patch_len = configs.patch_len
@@ -32,7 +34,7 @@ class Model(nn.Module):
         beta = configs.beta         # smoothing factor for DEMA (Double Exponential Moving Average)
 
         self.decomp = DECOMP(self.ma_type, alpha, beta)
-        self.net = Network(seq_len, pred_len, patch_len, stride, padding_patch, c_in)
+        self.net = Network(seq_len, pred_len, c_in, period_len, d_model)
         # self.net_mlp = NetworkMLP(seq_len, pred_len) # For ablation study with MLP-only stream
         # self.net_cnn = NetworkCNN(seq_len, pred_len, patch_len, stride, padding_patch) # For ablation study with CNN-only stream
 
