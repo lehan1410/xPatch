@@ -27,7 +27,11 @@ class Network(nn.Module):
             padding=self.period_len // 2
         )
 
-        self.linear = nn.Linear(self.seg_num_x, self.seg_num_y, bias=False)
+        self.mlp = nn.Sequential(
+                nn.Linear(self.seg_num_x, self.d_model),
+                nn.ReLU(),
+                nn.Linear(self.d_model, self.seg_num_y)
+            )
 
         # Linear Stream
         self.fc5 = nn.Linear(seq_len, pred_len * 2)
