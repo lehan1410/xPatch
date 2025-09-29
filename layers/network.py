@@ -53,7 +53,7 @@ class Network(nn.Module):
         s_concat = s_conv + s_pool
         s_concat = s_concat.reshape(-1, self.enc_in, self.seq_len) + s
         s = s_concat.reshape(-1, self.seg_num_x, self.period_len).permute(0, 2, 1)
-        y = self.linear(x)
+        y = self.linear(s)
         y = y.permute(0, 2, 1).reshape(B, self.enc_in, self.pred_len)
         y = y.permute(0, 2, 1) # [B, pred_len, enc_in]
 
