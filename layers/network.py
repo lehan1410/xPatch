@@ -34,11 +34,13 @@ class Network(nn.Module):
             )
 
         # Linear Stream
-        self.fc5 = nn.Linear(seq_len, pred_len * 2)
-        self.gelu1 = nn.GELU()
-        self.ln1 = nn.LayerNorm(pred_len * 2)
-        self.fc7 = nn.Linear(pred_len * 2, pred_len)
-        self.fc8 = nn.Linear(pred_len, pred_len)
+        self.trend_mlp = nn.Sequential(
+            nn.Linear(seq_len, d_model),
+            nn.GELU(),
+            nn.Linear(d_model, d_model),
+            nn.GELU(),
+            nn.Linear(d_model, pred_len)
+        )
 
     def forward(self, s, t):
         # s: [Batch, Input, Channel]
@@ -49,7 +51,7 @@ class Network(nn.Module):
         B = s.shape[0]
         C = s.shape[1]
         I = s.shape[2]
-        t = torch.reshape(t, (B*C, I))
+        # t = torch.reshape(t, (B*C, I))
 
         # Seasonal Stream: Conv1d + Pooling
         s_conv = self.conv1d(s.reshape(-1, 1, self.seq_len))
@@ -63,12 +65,9 @@ class Network(nn.Module):
 
 
         # Linear Stream
-        t = self.fc5(t)
-        t = self.gelu1(t)
-        t = self.ln1(t)
-        t = self.fc7(t)
-        t = self.fc8(t)
-        t = torch.reshape(t, (B, C, self.pred_len))
+        t = t.reshape(B*C, self.seq_len)
+        t = self.trend_mlp(t)
+        t = t.reshape(B, C, self.pred_len)
         t = t.permute(0,2,1) # [Batch, Output, Channel] = [B, pred_len, C]
 
         return t + y
