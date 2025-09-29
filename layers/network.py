@@ -23,13 +23,6 @@ class Network(nn.Module):
                     padding_mode="zeros", bias=False
                 ) for _ in range(c_in)
             ])
-        self.pool = nn.ModuleList([
-                nn.AvgPool1d(
-                    kernel_size=1 + 2 * (self.period_len // 2),
-                    stride=1,
-                    padding=self.period_len // 2
-                ) for _ in range(c_in)
-            ])
 
         self.mlp = nn.ModuleList([
                 nn.Sequential(
@@ -59,8 +52,7 @@ class Network(nn.Module):
             # Seasonal stream cho từng channel
             s_i = s[:,:,i].unsqueeze(1) # [B, 1, L]
             s_conv = self.conv1d[i](s_i)
-            s_pool = self.pool[i](s_i)
-            s_concat = s_conv + s_pool + s_i
+            s_concat = s_conv + s_i
             s_feat = s_concat.reshape(B, self.seg_num_x, self.period_len).permute(0,2,1)
             y_i = self.mlp[i](s_feat)
             y[:, :, i] = y_i.permute(0,2,1).reshape(B, self.pred_len)
