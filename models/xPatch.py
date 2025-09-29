@@ -49,6 +49,9 @@ class Model(nn.Module):
             x = self.net(x, x)
             # x = self.net_mlp(x) # For ablation study with MLP-only stream
             # x = self.net_cnn(x) # For ablation study with CNN-only stream
+        if self.ma_type == 'stl':
+            seasonal_init, trend_init, resid_init = self.decomp(x)
+            x = self.net(seasonal_init, trend_init, resid_init)
         else:
             seasonal_init, trend_init = self.decomp(x)
             x = self.net(seasonal_init, trend_init)
