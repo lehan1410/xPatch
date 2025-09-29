@@ -29,31 +29,29 @@ class Network(nn.Module):
 
         self.mlp = nn.Sequential(
                 nn.Linear(self.seg_num_x, self.d_model),
-                nn.ReLU(),
+                nn.GELU(),
                 nn.Linear(self.d_model, self.seg_num_y)
             )
 
-        # Linear Stream (trend)
+        # Linear Stream
         self.fc5 = nn.Linear(seq_len, pred_len * 2)
         self.gelu1 = nn.GELU()
         self.ln1 = nn.LayerNorm(pred_len * 2)
         self.fc7 = nn.Linear(pred_len * 2, pred_len)
         self.fc8 = nn.Linear(pred_len, pred_len)
 
-        # Residual Stream
-        self.resid_mlp = nn.Sequential(
-            nn.Linear(seq_len, pred_len),
-        )
-
-    def forward(self, s, t, r):
-        # s: [Batch, Input, Channel] (seasonal)
-        # t: [Batch, Input, Channel] (trend)
-        # r: [Batch, Input, Channel] (residual)
-
-        # Seasonal Stream: Conv1d + Pooling
+    def forward(self, s, t):
+        # s: [Batch, Input, Channel]
+        # t: [Batch, Input, Channel]
         s = s.permute(0,2,1) # [Batch, Channel, Input]
+        t = t.permute(0,2,1) # [Batch, Channel, Input]
+
         B = s.shape[0]
         C = s.shape[1]
+        I = s.shape[2]
+        t = torch.reshape(t, (B*C, I))
+
+        # Seasonal Stream: Conv1d + Pooling
         s_conv = self.conv1d(s.reshape(-1, 1, self.seq_len))
         s_pool = self.pool(s.reshape(-1, 1, self.seq_len))
         s_concat = s_conv + s_pool
@@ -63,23 +61,14 @@ class Network(nn.Module):
         y = y.permute(0, 2, 1).reshape(B, self.enc_in, self.pred_len)
         y = y.permute(0, 2, 1) # [B, pred_len, enc_in]
 
-        # Trend Stream
-        t = t.permute(0,2,1) # [Batch, Channel, Input]
-        t = torch.reshape(t, (B*C, self.seq_len))
+
+        # Linear Stream
         t = self.fc5(t)
         t = self.gelu1(t)
         t = self.ln1(t)
         t = self.fc7(t)
         t = self.fc8(t)
         t = torch.reshape(t, (B, C, self.pred_len))
-        t = t.permute(0,2,1) # [Batch, pred_len, Channel]
+        t = t.permute(0,2,1) # [Batch, Output, Channel] = [B, pred_len, C]
 
-        # Residual Stream
-        r = r.permute(0,2,1) # [Batch, Channel, Input]
-        r = torch.reshape(r, (B*C, self.seq_len))
-        r_pred = self.resid_mlp(r)
-        r_pred = torch.reshape(r_pred, (B, C, self.pred_len))
-        r_pred = r_pred.permute(0,2,1) # [Batch, pred_len, Channel]
-
-        # Tổng hợp output
-        return t + y + r_pred
+        return t + y
