@@ -40,15 +40,9 @@ class Network(nn.Module):
             ])
 
         # Linear Stream
-        self.fc_trend = nn.ModuleList([
-                nn.Sequential(
-                    nn.Linear(seq_len, pred_len * 2),
-                    nn.GELU(),
-                    nn.LayerNorm(pred_len * 2),
-                    nn.Linear(pred_len * 2, pred_len),
-                    nn.Linear(pred_len, pred_len)
-                ) for _ in range(c_in)
-            ])
+        self.simple_trend_linear = nn.ModuleList([
+            nn.Linear(seq_len, pred_len) for _ in range(c_in)
+        ])
 
     def forward(self, s, t):
         # s: [Batch, Input, Channel]
@@ -73,6 +67,6 @@ class Network(nn.Module):
 
             # Trend stream cho từng channel
             t_i = t[:,:,i]
-            t_i = self.fc_trend[i](t_i)
+            t_i = self.simple_trend_linear[i](t_i)
             t_out[:,:,i] = t_i
         return t_out + y
