@@ -30,11 +30,11 @@ class Network(nn.Module):
             groups=self.enc_in,
             bias=False
         )
-        with torch.no_grad():
-            k = self.pool.kernel_size[0]
-            weight = torch.ones(self.enc_in, 1, k) / k
-            self.pool.weight.copy_(weight)
-            self.pool.weight.requires_grad = False
+        # with torch.no_grad():
+        #     k = self.pool.kernel_size[0]
+        #     weight = torch.ones(self.enc_in, 1, k) / k
+        #     self.pool.weight.copy_(weight)
+        #     self.pool.weight.requires_grad = False
 
         self.mlp = nn.Sequential(
             nn.Linear(self.seg_num_x, self.d_model),
