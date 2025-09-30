@@ -44,7 +44,7 @@ class Network(nn.Module):
             in_channels=c_in, out_channels=c_in,
             kernel_size=seq_len, groups=c_in, bias=True
         )
-        nn.init.constant_(self.trend_regression.weight, 1.0 / pred_len)
+        nn.init.constant_(self.trend_regression.weight, 1.0 / self.pred_len)
         nn.init.constant_(self.trend_regression.bias, 0.0)
 
     def forward(self, s, t):
@@ -58,13 +58,13 @@ class Network(nn.Module):
         s_concat = s_conv + s_pool + s  # [B, C, L]
         # Patch thành [B, C, seg_num_x, period_len]
         s_patch = s_concat.reshape(B, C, self.seg_num_x, self.period_len)
-        # Gộp period_len vào batch để dùng Conv1d grouped
-        s_patch = s_patch.permute(0, 2, 1, 3).reshape(B * self.seg_num_x, C, self.period_len)  # [B*seg_num_x, C, period_len]
-        y = self.mlp1(s_patch)  # [B*seg_num_x, C*d_model, period_len_out=1]
+        s_patch = s_patch.mean(-1)  # [B, C, seg_num_x]
+        y = self.mlp1(s_patch)
         y = self.act(y)
-        y = self.mlp2(y)        # [B*seg_num_x, C*seg_num_y, 1]
-        y = y.view(B, self.seg_num_x, C, self.seg_num_y).mean(1)  # [B, C, seg_num_y]
-        y = y.permute(0, 2, 1)  # [B, pred_len, C] (seg_num_y*period_len = pred_len)
+        y = self.mlp2(y)
+        y = y.view(B, C, self.seg_num_y)
+        y = y.permute(0, 2, 1)  # [B, pred_len//period_len, C]
+        y = y.repeat_interleave(self.period_len, dim=1)[:, :self.pred_len, :]  # [B, pred_len, C]
 
         # Linear Stream: channel independence
         t = t.permute(0, 2, 1)  # [B, C, L]
