@@ -50,7 +50,7 @@ class Network(nn.Module):
         B = s.shape[0]
         C = s.shape[1]
         I = s.shape[2]
-        t = torch.reshape(t, (B*C, I))
+        # t = torch.reshape(t, (B*C, I))
 
         # Seasonal Stream: Conv1d + Pooling
         s_conv = self.conv1d(s.reshape(-1, 1, self.seq_len))
