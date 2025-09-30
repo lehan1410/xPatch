@@ -45,7 +45,7 @@ class Network(nn.Module):
         # s: [Batch, Input, Channel]
         # t: [Batch, Input, Channel]
         s = s.permute(0,2,1) # [Batch, Channel, Input]
-        t = t.permute(0,2,1) # [Batch, Channel, Input]
+        # t = t.permute(0,2,1) # [Batch, Channel, Input]
 
         B = s.shape[0]
         C = s.shape[1]
@@ -64,8 +64,10 @@ class Network(nn.Module):
 
 
         # Linear Stream
-        t_i = t[:,:,i]
-        t_i = self.trend_regression[i](t_i)
-        t_out[:,:,i] = t_i # [Batch, Output, Channel] = [B, pred_len, C]
+        t_out = torch.zeros(B, self.pred_len, C, device=s.device, dtype=s.dtype)
+        for i in range(C):
+            t_i = t[:,:,i]
+            t_i = self.trend_regression[i](t_i)
+            t_out[:,:,i] = t_i # [Batch, Output, Channel] = [B, pred_len, C]
 
         return t_out + y
