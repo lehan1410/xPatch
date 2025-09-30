@@ -21,11 +21,20 @@ class Network(nn.Module):
             stride=1, padding=self.period_len // 2,
             padding_mode="zeros", bias=False, groups=self.enc_in
         )
-        self.pool = nn.AvgPool1d(
+        self.pool = nn.Conv1d(
+            in_channels=self.enc_in,
+            out_channels=self.enc_in,
             kernel_size=1 + 2 * (self.period_len // 2),
             stride=1,
-            padding=self.period_len // 2
+            padding=self.period_len // 2,
+            groups=self.enc_in,
+            bias=False
         )
+        with torch.no_grad():
+            k = self.pool.kernel_size[0]
+            weight = torch.ones(self.enc_in, 1, k) / k
+            self.pool.weight.copy_(weight)
+            self.pool.weight.requires_grad = False
 
         self.mlp = nn.Sequential(
             nn.Linear(self.seg_num_x, self.d_model),
