@@ -16,7 +16,7 @@ class Network(nn.Module):
         self.seg_num_y = self.pred_len // self.period_len
 
         self.conv1d = nn.Conv1d(
-            in_channels=1, out_channels=1,
+            in_channels=self.enc_in, out_channels=self.enc_in,
             kernel_size=1 + 2 * (self.period_len // 2),
             stride=1, padding=self.period_len // 2,
             padding_mode="zeros", bias=False, groups=self.enc_in
@@ -52,15 +52,14 @@ class Network(nn.Module):
         t = torch.reshape(t, (B*C, I))
 
         # Seasonal Stream: Conv1d + Pooling
-        s_conv = self.conv1d(s.reshape(-1, 1, self.seq_len))
-        s_pool = self.pool(s.reshape(-1, 1, self.seq_len))
-        s_concat = s_conv + s_pool
-        s_concat = s_concat.reshape(-1, self.enc_in, self.seq_len) + s
-        s = s_concat.reshape(-1, self.seg_num_x, self.period_len).permute(0, 2, 1)
+        s_conv = self.conv1d(s)  # [B, C, seq_len]
+        s_pool = self.pool(s)
+        s_concat = s_conv + s_pool + s
+        s = s_concat.reshape(-1, self.enc_in, self.seg_num_x, self.period_len).permute(0, 1, 3, 2)
+        s = s.reshape(-1, self.seg_num_x)
         y = self.mlp(s)
-        y = y.permute(0, 2, 1).reshape(B, self.enc_in, self.pred_len)
+        y = y.reshape(B, self.enc_in, self.period_len, self.seg_num_y).permute(0, 1, 3, 2).reshape(B, self.enc_in, self.pred_len)
         y = y.permute(0, 2, 1) # [B, pred_len, enc_in]
-
 
         # Linear Stream
         t = self.fc5(t)
