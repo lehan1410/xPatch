@@ -52,18 +52,19 @@ class Network(nn.Module):
         B, L, C = s.shape
 
         # Seasonal Stream: channel independence
+        # Seasonal Stream: channel independence
         s = s.permute(0, 2, 1)  # [B, C, L]
         s_conv = self.conv1d(s)
         s_pool = self.pool(s)
         s_concat = s_conv + s_pool + s  # [B, C, L]
-        # Patch thành [B, C, seg_num_x, period_len]
         s_patch = s_concat.reshape(B, C, self.seg_num_x, self.period_len)
         s_patch = s_patch.mean(-1)  # [B, C, seg_num_x]
         y = self.mlp1(s_patch)
         y = self.act(y)
         y = self.mlp2(y)
-        y = y.view(B, C, self.seg_num_y)
-        y = y.permute(0, 2, 1)  # [B, pred_len//period_len, C]
+        y = y.view(B, C, self.seg_num_y, self.seg_num_x)  # [B, C, seg_num_y, seg_num_x]
+        y = y.mean(-1)  # [B, C, seg_num_y]
+        y = y.permute(0, 2, 1)  # [B, seg_num_y, C]
         y = y.repeat_interleave(self.period_len, dim=1)[:, :self.pred_len, :]  # [B, pred_len, C]
 
         # Linear Stream: channel independence
