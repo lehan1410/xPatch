@@ -19,7 +19,7 @@ class Network(nn.Module):
             in_channels=1, out_channels=1,
             kernel_size=1 + 2 * (self.period_len // 2),
             stride=1, padding=self.period_len // 2,
-            padding_mode="zeros", bias=False
+            padding_mode="zeros", bias=False, groups=self.enc_in
         )
         self.pool = nn.AvgPool1d(
             kernel_size=1 + 2 * (self.period_len // 2),
