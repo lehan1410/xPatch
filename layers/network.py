@@ -5,6 +5,7 @@ class Network(nn.Module):
     def __init__(self, seq_len, pred_len, c_in, period_len, d_model):
         super(Network, self).__init__()
 
+        # Parameters
         self.pred_len = pred_len
         self.seq_len = seq_len
         self.enc_in  = c_in
@@ -14,7 +15,6 @@ class Network(nn.Module):
         self.seg_num_x = self.seq_len // self.period_len
         self.seg_num_y = self.pred_len // self.period_len
 
-        # Channel-independent Conv1d & Pooling
         self.conv1d = nn.Conv1d(
             in_channels=c_in, out_channels=c_in,
             kernel_size=1 + 2 * (self.period_len // 2),
@@ -28,48 +28,43 @@ class Network(nn.Module):
             padding=self.period_len // 2
         )
 
-        # Channel-independent MLP (grouped linear)
-        self.mlp1 = nn.Conv1d(
-            in_channels=c_in, out_channels=c_in * self.d_model,
-            kernel_size=1, groups=c_in, bias=True
-        )
-        self.act = nn.GELU()
-        self.mlp2 = nn.Conv1d(
-            in_channels=c_in * self.d_model, out_channels=c_in * self.seg_num_y,
-            kernel_size=1, groups=c_in, bias=True
-        )
+        # Seasonal Stream MLP (channel independence)
+        self.seasonal_fc1 = nn.Linear(seq_len, pred_len * 2)
+        self.seasonal_gelu1 = nn.GELU()
+        self.seasonal_ln1 = nn.LayerNorm(pred_len * 2)
+        self.seasonal_fc2 = nn.Linear(pred_len * 2, pred_len)
+        self.seasonal_fc3 = nn.Linear(pred_len, pred_len)
 
-        # Linear Stream (trend) - channel independence
-        self.trend_regression = nn.Conv1d(
-            in_channels=c_in, out_channels=c_in,
-            kernel_size=seq_len, groups=c_in, bias=True
-        )
-        nn.init.constant_(self.trend_regression.weight, 1.0 / self.pred_len)
-        nn.init.constant_(self.trend_regression.bias, 0.0)
+        # Linear Stream
+        self.fc5 = nn.Linear(seq_len, pred_len * 2)
+        self.gelu1 = nn.GELU()
+        self.ln1 = nn.LayerNorm(pred_len * 2)
+        self.fc7 = nn.Linear(pred_len * 2, pred_len)
+        self.fc8 = nn.Linear(pred_len, pred_len)
 
     def forward(self, s, t):
         # s, t: [Batch, Input, Channel]
-        B, L, C = s.shape
+        s = s.permute(0,2,1) # [B, C, I]
+        t = t.permute(0,2,1) # [B, C, I]
+
+        B, C, I = s.shape
 
         # Seasonal Stream: channel independence
-        # Seasonal Stream: channel independence
-        s = s.permute(0, 2, 1)  # [B, C, L]
-        s_conv = self.conv1d(s)
-        s_pool = self.pool(s)
-        s_concat = s_conv + s_pool + s  # [B, C, L]
-        s_patch = s_concat.reshape(B, C, self.seg_num_x, self.period_len)
-        s_patch = s_patch.mean(-1)  # [B, C, seg_num_x]
-        y = self.mlp1(s_patch)
-        y = self.act(y)
-        y = self.mlp2(y)
-        y = y.view(B, C, self.seg_num_y, self.seg_num_x)  # [B, C, seg_num_y, seg_num_x]
-        y = y.mean(-1)  # [B, C, seg_num_y]
-        y = y.permute(0, 2, 1)  # [B, seg_num_y, C]
-        y = y.repeat_interleave(self.period_len, dim=1)[:, :self.pred_len, :]  # [B, pred_len, C]
+        s = s.reshape(B*C, I)
+        s = self.seasonal_fc1(s)
+        s = self.seasonal_gelu1(s)
+        s = self.seasonal_ln1(s)
+        s = self.seasonal_fc2(s)
+        s = self.seasonal_fc3(s)
+        y = s.reshape(B, C, self.pred_len).permute(0, 2, 1) # [B, pred_len, C]
 
         # Linear Stream: channel independence
-        t = t.permute(0, 2, 1)  # [B, C, L]
-        t_out = self.trend_regression(t)  # [B, C, 1]
-        t_out = t_out.squeeze(-1).unsqueeze(1).repeat(1, self.pred_len, 1)  # [B, pred_len, C]
+        t = t.reshape(B*C, I)
+        t = self.fc5(t)
+        t = self.gelu1(t)
+        t = self.ln1(t)
+        t = self.fc7(t)
+        t = self.fc8(t)
+        t = t.reshape(B, C, self.pred_len).permute(0, 2, 1) # [B, pred_len, C]
 
-        return t_out + y
+        return t + y
