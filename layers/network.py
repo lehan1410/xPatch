@@ -56,12 +56,14 @@ class Network(nn.Module):
         s_conv = self.conv1d(s)
         s_pool = self.pool(s)
         s_concat = s_conv + s_pool + s  # [B, C, L]
-        s_patch = s_concat.reshape(B, C, self.seg_num_x, self.period_len).permute(0, 2, 1, 3)
-        s_patch = s_patch.reshape(B, self.seg_num_x, C * self.period_len).permute(0, 2, 1)  # [B, C*period_len, seg_num_x]
-        y = self.mlp1(s_patch)
+        # Patch thành [B, C, seg_num_x, period_len]
+        s_patch = s_concat.reshape(B, C, self.seg_num_x, self.period_len)
+        # Gộp period_len vào batch để dùng Conv1d grouped
+        s_patch = s_patch.permute(0, 2, 1, 3).reshape(B * self.seg_num_x, C, self.period_len)  # [B*seg_num_x, C, period_len]
+        y = self.mlp1(s_patch)  # [B*seg_num_x, C*d_model, period_len_out=1]
         y = self.act(y)
-        y = self.mlp2(y)
-        y = y.view(B, C, self.seg_num_y, self.seg_num_x).mean(-1)  # [B, C, seg_num_y]
+        y = self.mlp2(y)        # [B*seg_num_x, C*seg_num_y, 1]
+        y = y.view(B, self.seg_num_x, C, self.seg_num_y).mean(1)  # [B, C, seg_num_y]
         y = y.permute(0, 2, 1)  # [B, pred_len, C] (seg_num_y*period_len = pred_len)
 
         # Linear Stream: channel independence
