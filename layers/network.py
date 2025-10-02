@@ -22,10 +22,17 @@ class Network(nn.Module):
             padding_mode="zeros", bias=False, groups=self.enc_in
         )
 
+
+        self.pool = nn.AvgPool1d(
+            kernel_size=1 + 2 * (self.period_len // 2),
+            stride=1,
+            padding=self.period_len // 2
+        )
+
         self.mlp = nn.Sequential(
-            nn.Linear(self.seg_num_x, self.d_model),
+            nn.Linear(self.seg_num_x, self.d_model * 2),
             nn.GELU(),
-            nn.Linear(self.d_model, self.seg_num_y)
+            nn.Linear(self.d_model * 2, self.seg_num_y)
         )
 
         # Linear Stream
@@ -47,7 +54,9 @@ class Network(nn.Module):
         t = torch.reshape(t, (B*C, I))
 
         # Seasonal Stream: Conv1d + Pooling
-        s = self.conv1d(s.reshape(-1, 1, self.seq_len)).reshape(-1, self.enc_in, self.seq_len) + s
+        s_conv = self.conv1d(s)  # [B, C, seq_len]
+        s_pool = self.pool(s_conv)  # [B, C, seq_len]
+        s = s_pool + s
         s = s.reshape(-1, self.seg_num_x, self.period_len).permute(0, 2, 1)
         y = self.mlp(s)
         y = y.permute(0, 2, 1).reshape(B, self.enc_in, self.pred_len)
