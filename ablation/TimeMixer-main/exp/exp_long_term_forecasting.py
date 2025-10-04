@@ -11,6 +11,7 @@ import os
 import time
 import warnings
 import numpy as np
+from ptflops import get_model_complexity_info
 
 warnings.filterwarnings('ignore')
 
@@ -40,6 +41,26 @@ class Exp_Long_Term_Forecast(Exp_Basic):
         else:
             criterion = nn.MSELoss()
         return criterion
+    
+    def test_params_flop(model,x_shape):
+        """
+        If you want to thest former's flop, you need to give default value to inputs in model.forward(), the following code can only pass one argument to forward()
+        """
+        # model_params = 0
+        # for parameter in model.parameters():
+        #     model_params += parameter.numel()
+        #     print('INFO: Trainable parameter count: {:.2f}M'.format(model_params / 1000000.0))
+        # from ptflops import get_model_complexity_info
+        # with torch.cuda.device(0):
+        #     macs, params = get_model_complexity_info(model.cuda(), x_shape, as_strings=True, print_per_layer_stat=True)
+        #     # print('Flops:' + flops)
+        #     # print('Params:' + params)
+        #     print('{:<30}  {:<8}'.format('Computational complexity: ', macs))
+        #     print('{:<30}  {:<8}'.format('Number of parameters: ', params))
+        with torch.cuda.device(0):
+            macs, params = get_model_complexity_info(model.cuda(), x_shape, as_strings=True, print_per_layer_stat=False)
+            print('{:<30}  {:<8}'.format('Computational complexity: ', macs))
+            print('{:<30}  {:<8}'.format('Number of parameters: ', params))
 
     def vali(self, vali_data, vali_loader, criterion):
         total_loss = []
@@ -112,6 +133,7 @@ class Exp_Long_Term_Forecast(Exp_Basic):
 
         model_optim = self._select_optimizer()
         criterion = self._select_criterion()
+        epoch_times = []
 
         scheduler = lr_scheduler.OneCycleLR(optimizer=model_optim,
                                             steps_per_epoch=train_steps,
@@ -198,6 +220,8 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                 if self.args.lradj == 'TST':
                     adjust_learning_rate(model_optim, scheduler, epoch + 1, self.args, printout=False)
                     scheduler.step()
+            epoch_duration = time.time() - epoch_time
+            epoch_times.append(epoch_duration) 
 
             train_times.append(train_time/len(train_loader))
             print("Epoch: {} cost time: {}".format(epoch + 1, time.time() - epoch_time))
@@ -216,6 +240,9 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                 adjust_learning_rate(model_optim, scheduler, epoch + 1, self.args, printout=True)
             else:
                 print('Updating learning rate to {}'.format(scheduler.get_last_lr()[0]))
+        
+        avg_epoch_time = np.mean(epoch_times)
+        print(f"Average epoch time: {avg_epoch_time:.2f} seconds")
 
         print("Training time: {}".format(np.sum(train_times)/len(train_times)))
         best_model_path = path + '/' + 'checkpoint.pth'
@@ -293,6 +320,8 @@ class Exp_Long_Term_Forecast(Exp_Basic):
                     pd = np.concatenate((input[0, :, -1], pred[0, :, -1]), axis=0)
                     visual(gt, pd, os.path.join(folder_path, str(i) + '.pdf'))
 
+        if test==1:
+            self.test_params_flop(self.model, (batch_x.shape[1],batch_x.shape[2]))
         print("Inference time: {}".format(test_time/len(test_loader)))
         preds = np.array(preds)
         trues = np.array(trues)

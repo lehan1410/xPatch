@@ -110,6 +110,7 @@ class Exp_Main(Exp_Basic):
 
         model_optim = self._select_optimizer()
         criterion = self._select_criterion()
+        epoch_times = []
 
         if self.args.use_amp:
             scaler = torch.cuda.amp.GradScaler()
@@ -186,6 +187,8 @@ class Exp_Main(Exp_Basic):
                     model_optim.step()
 
             train_times.append(train_time/len(train_loader))
+            epoch_duration = time.time() - epoch_time
+            epoch_times.append(epoch_duration)  
             print("Epoch: {} cost time: {}".format(epoch + 1, time.time() - epoch_time))
             train_loss = np.average(train_loss)
             if not self.args.train_only:
@@ -207,6 +210,8 @@ class Exp_Main(Exp_Basic):
             adjust_learning_rate(model_optim, epoch + 1, self.args)
 
         print("Training time: {}".format(np.sum(train_times)/len(train_times)))
+        avg_epoch_time = np.mean(epoch_times)
+        print(f"Average epoch time: {avg_epoch_time:.2f} seconds")
         best_model_path = path + '/' + 'checkpoint.pth'
         self.model.load_state_dict(torch.load(best_model_path))
 

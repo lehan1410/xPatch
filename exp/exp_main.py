@@ -13,6 +13,7 @@ import time
 import warnings
 import math
 import psutil
+from ptflops import get_model_complexity_info
 
 warnings.filterwarnings('ignore')
 
@@ -20,17 +21,6 @@ class Exp_Main(Exp_Basic):
     def __init__(self, args):
         super(Exp_Main, self).__init__(args)
 
-    def print_model_info(self):
-        total_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
-        print(f"Total trainable parameters: {total_params:,}")
-
-        process = psutil.Process(os.getpid())
-        mem_MB = process.memory_info().rss / 1024 / 1024
-        print(f"Memory usage (RAM): {mem_MB:.2f} MB")
-
-        if torch.cuda.is_available():
-            gpu_mem = torch.cuda.max_memory_allocated() / 1024 / 1024
-            print(f"Max GPU memory allocated: {gpu_mem:.2f} MB")
 
 
     def _build_model(self):
@@ -62,6 +52,26 @@ class Exp_Main(Exp_Basic):
         mse_criterion = nn.MSELoss()
         mae_criterion = nn.L1Loss()
         return mse_criterion, mae_criterion
+
+    def test_params_flop(model,x_shape):
+        """
+        If you want to thest former's flop, you need to give default value to inputs in model.forward(), the following code can only pass one argument to forward()
+        """
+        # model_params = 0
+        # for parameter in model.parameters():
+        #     model_params += parameter.numel()
+        #     print('INFO: Trainable parameter count: {:.2f}M'.format(model_params / 1000000.0))
+        # from ptflops import get_model_complexity_info
+        # with torch.cuda.device(0):
+        #     macs, params = get_model_complexity_info(model.cuda(), x_shape, as_strings=True, print_per_layer_stat=True)
+        #     # print('Flops:' + flops)
+        #     # print('Params:' + params)
+        #     print('{:<30}  {:<8}'.format('Computational complexity: ', macs))
+        #     print('{:<30}  {:<8}'.format('Number of parameters: ', params))
+        with torch.cuda.device(0):
+            macs, params = get_model_complexity_info(model.cuda(), x_shape, as_strings=True, print_per_layer_stat=False)
+            print('{:<30}  {:<8}'.format('Computational complexity: ', macs))
+            print('{:<30}  {:<8}'.format('Number of parameters: ', params))
 
     def vali(self, vali_data, vali_loader, criterion, is_test = True):
         total_loss = []
@@ -125,7 +135,6 @@ class Exp_Main(Exp_Basic):
         model_optim = self._select_optimizer()
         # criterion = self._select_criterion() # For MSE criterion
         mse_criterion, mae_criterion = self._select_criterion()
-        self.print_model_info()
         epoch_times = []
 
         # # CARD's cosine learning rate decay with warmup
@@ -293,6 +302,9 @@ class Exp_Main(Exp_Basic):
                     gt = np.concatenate((input[0, :, -1], true[0, :, -1]), axis=0)
                     pd = np.concatenate((input[0, :, -1], pred[0, :, -1]), axis=0)
                     visual(gt, pd, os.path.join(folder_path, str(i) + '.pdf'))
+
+        if test==1:
+            self.test_params_flop(self.model, (batch_x.shape[1],batch_x.shape[2]))
             
         # print("Inference time: {}".format(test_time/len(test_loader))) # For computational cost analysis
         preds = np.array(preds)
