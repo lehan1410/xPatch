@@ -170,7 +170,6 @@ class Exp_Main(Exp_Basic):
         #     return lr
 
         # train_times = [] # For computational cost analysis
-        total_peak_memory = 0
         for epoch in range(self.args.train_epochs):
             iter_count = 0
             train_loss = []
@@ -233,16 +232,14 @@ class Exp_Main(Exp_Basic):
                 loss.backward()
                 model_optim.step()
 
-            if torch.cuda.is_available():
-                torch.cuda.synchronize()
-                mem = torch.cuda.max_memory_allocated(device=self.device) / (1024 ** 2)
-                total_peak_memory += mem
-                print(f"[TRAIN MEMORY] Max memory allocated in epoch {epoch+1}: {mem:.2f} MB")
-                torch.cuda.reset_peak_memory_stats(device=self.device)
-            else:
-                print("[TRAIN MEMORY] CUDA not available, cannot measure GPU memory.")
-            
-            print(f"[TRAIN MEMORY] Total peak memory allocated during training: {total_peak_memory:.2f} MB")
+            # if torch.cuda.is_available():
+            #     torch.cuda.synchronize()
+            #     mem = torch.cuda.max_memory_allocated(device=self.device) / (1024 ** 2)
+            #     print(f"[TRAIN MEMORY] Max memory allocated in epoch {epoch+1}: {mem:.2f} MB")
+            #     torch.cuda.reset_peak_memory_stats(device=self.device)
+            # else:
+            #     print("[TRAIN MEMORY] CUDA not available, cannot measure GPU memory.")
+                
             # train_times.append(train_time/len(train_loader)) # For computational cost analysis
             epoch_duration = time.time() - epoch_time
             epoch_times.append(epoch_duration)  
@@ -326,9 +323,9 @@ class Exp_Main(Exp_Basic):
                     pd = np.concatenate((input[0, :, -1], pred[0, :, -1]), axis=0)
                     visual(gt, pd, os.path.join(folder_path, str(i) + '.pdf'))
 
-        print("\n--- Model Statistics ---")
-        test_model_size(self.model)
-        test_params_memory(self.model, (batch_x.shape[1], batch_x.shape[2]))
+        # print("\n--- Model Statistics ---")
+        # test_model_size(self.model)
+        # test_params_memory(self.model, (batch_x.shape[1], batch_x.shape[2]))
         # if test==1:
         #     self.test_params_flop(self.model, (batch_x.shape[1],batch_x.shape[2]))
             
