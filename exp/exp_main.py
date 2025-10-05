@@ -13,9 +13,21 @@ import time
 import warnings
 import math
 import psutil
-from ptflops import get_model_complexity_info
+# from ptflops import get_model_complexity_info
 
 warnings.filterwarnings('ignore')
+
+
+def test_model_size(model, filename='temp_model.pt'):
+    torch.save(model.state_dict(), filename)
+    size_mb = os.path.getsize(filename) / (1024 ** 2)
+    print(f"[MODEL SIZE] Model file size: {size_mb:.2f} MB")
+    os.remove(filename)
+
+def test_params_memory(model, input_shape):
+    # Tính số lượng tham số
+    total_params = sum(p.numel() for p in model.parameters())
+    print(f"[PARAMS] Total parameters: {total_params:,}")
 
 class Exp_Main(Exp_Basic):
     def __init__(self, args):
@@ -53,25 +65,25 @@ class Exp_Main(Exp_Basic):
         mae_criterion = nn.L1Loss()
         return mse_criterion, mae_criterion
 
-    def test_params_flop(model,x_shape):
-        """
-        If you want to thest former's flop, you need to give default value to inputs in model.forward(), the following code can only pass one argument to forward()
-        """
-        # model_params = 0
-        # for parameter in model.parameters():
-        #     model_params += parameter.numel()
-        #     print('INFO: Trainable parameter count: {:.2f}M'.format(model_params / 1000000.0))
-        # from ptflops import get_model_complexity_info
-        # with torch.cuda.device(0):
-        #     macs, params = get_model_complexity_info(model.cuda(), x_shape, as_strings=True, print_per_layer_stat=True)
-        #     # print('Flops:' + flops)
-        #     # print('Params:' + params)
-        #     print('{:<30}  {:<8}'.format('Computational complexity: ', macs))
-        #     print('{:<30}  {:<8}'.format('Number of parameters: ', params))
-        with torch.cuda.device(0):
-            macs, params = get_model_complexity_info(model.cuda(), x_shape, as_strings=True, print_per_layer_stat=False)
-            print('{:<30}  {:<8}'.format('Computational complexity: ', macs))
-            print('{:<30}  {:<8}'.format('Number of parameters: ', params))
+    # def test_params_flop(model,x_shape):
+    #     """
+    #     If you want to thest former's flop, you need to give default value to inputs in model.forward(), the following code can only pass one argument to forward()
+    #     """
+    #     # model_params = 0
+    #     # for parameter in model.parameters():
+    #     #     model_params += parameter.numel()
+    #     #     print('INFO: Trainable parameter count: {:.2f}M'.format(model_params / 1000000.0))
+    #     # from ptflops import get_model_complexity_info
+    #     # with torch.cuda.device(0):
+    #     #     macs, params = get_model_complexity_info(model.cuda(), x_shape, as_strings=True, print_per_layer_stat=True)
+    #     #     # print('Flops:' + flops)
+    #     #     # print('Params:' + params)
+    #     #     print('{:<30}  {:<8}'.format('Computational complexity: ', macs))
+    #     #     print('{:<30}  {:<8}'.format('Number of parameters: ', params))
+    #     with torch.cuda.device(0):
+    #         macs, params = get_model_complexity_info(model.cuda(), x_shape, as_strings=True, print_per_layer_stat=False)
+    #         print('{:<30}  {:<8}'.format('Computational complexity: ', macs))
+    #         print('{:<30}  {:<8}'.format('Number of parameters: ', params))
 
     def vali(self, vali_data, vali_loader, criterion, is_test = True):
         total_loss = []
@@ -158,6 +170,7 @@ class Exp_Main(Exp_Basic):
         #     return lr
 
         # train_times = [] # For computational cost analysis
+        total_peak_memory = 0
         for epoch in range(self.args.train_epochs):
             iter_count = 0
             train_loss = []
@@ -220,6 +233,16 @@ class Exp_Main(Exp_Basic):
                 loss.backward()
                 model_optim.step()
 
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+                mem = torch.cuda.max_memory_allocated(device=self.device) / (1024 ** 2)
+                total_peak_memory += mem
+                print(f"[TRAIN MEMORY] Max memory allocated in epoch {epoch+1}: {mem:.2f} MB")
+                torch.cuda.reset_peak_memory_stats(device=self.device)
+            else:
+                print("[TRAIN MEMORY] CUDA not available, cannot measure GPU memory.")
+            
+            print(f"[TRAIN MEMORY] Total peak memory allocated during training: {total_peak_memory:.2f} MB")
             # train_times.append(train_time/len(train_loader)) # For computational cost analysis
             epoch_duration = time.time() - epoch_time
             epoch_times.append(epoch_duration)  
@@ -303,8 +326,11 @@ class Exp_Main(Exp_Basic):
                     pd = np.concatenate((input[0, :, -1], pred[0, :, -1]), axis=0)
                     visual(gt, pd, os.path.join(folder_path, str(i) + '.pdf'))
 
-        if test==1:
-            self.test_params_flop(self.model, (batch_x.shape[1],batch_x.shape[2]))
+        print("\n--- Model Statistics ---")
+        test_model_size(self.model)
+        test_params_memory(self.model, (batch_x.shape[1], batch_x.shape[2]))
+        # if test==1:
+        #     self.test_params_flop(self.model, (batch_x.shape[1],batch_x.shape[2]))
             
         # print("Inference time: {}".format(test_time/len(test_loader))) # For computational cost analysis
         preds = np.array(preds)

@@ -104,3 +104,28 @@ def visual(true, preds=None, name='./pic/test.pdf'):
         plt.plot(preds, label='Prediction', linewidth=2)
     plt.legend()
     plt.savefig(name, bbox_inches='tight')
+
+
+def test_params_memory(model, x_shape, device='cuda:0'):
+    import torch
+
+    batch_size = 1
+    seq_len, c_in = x_shape
+    pred_len = getattr(model, 'pred_len', 96)
+    label_len = getattr(model, 'label_len', 48)
+
+    dummy_x = torch.randn(batch_size, seq_len, c_in).to(device)
+    dummy_x_mark = torch.randn(batch_size, seq_len, 4).to(device)
+    dummy_dec_inp = torch.randn(batch_size, label_len + pred_len, c_in).to(device)
+    dummy_y_mark = torch.randn(batch_size, label_len + pred_len, 4).to(device)
+
+    model = model.to(device)
+    model.eval()
+    with torch.no_grad():
+        _ = model(dummy_x, dummy_x_mark, dummy_dec_inp, dummy_y_mark)
+    torch.cuda.synchronize()
+    max_memory = torch.cuda.max_memory_allocated(device=device) / (1024 ** 2)
+
+    num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"Trainable parameter count: {num_params / 1e6:.2f}M")
+    print(f"[MEMORY] Max memory allocated during inference: {max_memory:.2f} MB")
