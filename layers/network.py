@@ -26,8 +26,7 @@ class Network(nn.Module):
         # Attention giữa các subsequence
         self.attn_subseq = nn.MultiheadAttention(embed_dim=self.period_len, num_heads=2, batch_first=True)
         # Attention giữa các channel
-        self.attn_channel = nn.MultiheadAttention(embed_dim=self.seg_num_x, num_heads=2, batch_first=True)
-
+        self.attn_channel = nn.MultiheadAttention(embed_dim=self.enc_in, num_heads=1, batch_first=True)
         self.mlp = nn.Sequential(
             nn.Linear(self.seg_num_x, self.d_model * 2),
             nn.GELU(),
@@ -63,9 +62,9 @@ class Network(nn.Module):
         s_subseq_attn, _ = self.attn_subseq(s_subseq, s_subseq, s_subseq)  # [B*C, seg_num_x, period_len]
 
         # Attention giữa các channel
-        s_channel = s.reshape(B, C, self.seg_num_x, self.period_len).permute(0, 2, 3, 1)  # [B, seg_num_x, period_len, C]
-        s_channel = s_channel.reshape(-1, self.seg_num_x, C)  # [B*period_len, seg_num_x, C]
-        s_channel_attn, _ = self.attn_channel(s_channel, s_channel, s_channel)  # [B*period_len, seg_num_x, C]
+        s_channel = s.reshape(B, C, self.seg_num_x, self.period_len).permute(0, 3, 2, 1)  # [B, period_len, seg_num_x, C]
+        s_channel = s_channel.reshape(-1, self.seg_num_x, C)  # [B*period_len, seg_num_x, enc_in]
+        s_channel_attn, _ = self.attn_channel(s_channel, s_channel, s_channel)  # [B*period_len, seg_num_x, enc_in]  # [B*period_len, seg_num_x, C]
         # Đưa về [B*C, seg_num_x, period_len] để cộng với s_subseq_attn
         s_channel_attn = s_channel_attn.permute(0, 2, 1)  # [B*period_len, C, seg_num_x]
         s_channel_attn = s_channel_attn.reshape(B*C, self.period_len, self.seg_num_x).permute(0, 2, 1)  # [B*C, seg_num_x, period_len]
