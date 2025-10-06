@@ -40,6 +40,9 @@ class Network(nn.Module):
         # Lớp Attention
         self.attn = nn.MultiheadAttention(embed_dim=self.d_model, num_heads=self.n_heads)
 
+        # Chuyển đổi kích thước của t (đảm bảo kích thước là d_model)
+        self.linear_t = nn.Linear(self.enc_in, self.d_model)
+
         # Linear Stream
         self.fc5 = nn.Linear(seq_len, pred_len * 2)
         self.gelu1 = nn.GELU()
@@ -73,7 +76,10 @@ class Network(nn.Module):
         t = self.ln1(t)
         t = self.fc7(t)
         t = self.fc8(t)
-        t = torch.reshape(t, (B, C, self.pred_len))
+
+        # Sử dụng Linear để thay đổi kích thước của t thành d_model
+        t = self.linear_t(t)  # Đảm bảo t có kích thước d_model
+        t = torch.reshape(t, (B, self.d_model, self.pred_len))
         t = t.permute(0,2,1)  # [Batch, Output, Channel] = [B, pred_len, C]
 
         # Thêm Attention vào Linear Stream
