@@ -15,7 +15,7 @@ class Network(nn.Module):
         self.seg_num_x = self.seq_len // self.period_len
         self.seg_num_y = self.pred_len // self.period_len
 
-        # Conv1d cho channel independence
+        # Thêm Conv1d cho channel independence
         self.conv1d = nn.Conv1d(
             in_channels=self.enc_in, out_channels=self.enc_in,
             kernel_size=1 + 2 * (self.period_len // 2),
@@ -23,10 +23,7 @@ class Network(nn.Module):
             padding_mode="zeros", bias=False, groups=self.enc_in
         )
 
-        # Attention giữa các subsequence
-        self.attn_subseq = nn.MultiheadAttention(embed_dim=self.period_len, num_heads=4, batch_first=True)
-        # Attention giữa các channel
-        self.attn_channel = nn.MultiheadAttention(embed_dim=self.seg_num_x, num_heads=4, batch_first=True)
+        self.attn = nn.MultiheadAttention(embed_dim=self.period_len, num_heads=4, batch_first=True)
 
         self.mlp = nn.Sequential(
             nn.Linear(self.seg_num_x, self.d_model * 2),
@@ -52,26 +49,16 @@ class Network(nn.Module):
         I = s.shape[2]
         t = torch.reshape(t, (B*C, I))
 
-        # Conv1d
+        # Thêm Conv1d trước khi chia subsequence
         s_conv = self.conv1d(s)  # [B, C, seq_len]
-        s = s_conv + s           # [B, C, seq_len]
+        s = s_conv + s
 
         # Chia thành các subsequence
-        s_subseq = s.reshape(-1, self.seg_num_x, self.period_len)  # [B*C, seg_num_x, period_len]
+        s = s.reshape(-1, self.seg_num_x, self.period_len)  # [B*C, seg_num_x, period_len]
 
         # Attention giữa các subsequence
-        s_subseq_attn, _ = self.attn_subseq(s_subseq, s_subseq, s_subseq)  # [B*C, seg_num_x, period_len]
-
-        # Attention giữa các channel
-        s_channel = s.reshape(B, C, self.seg_num_x, self.period_len).permute(0, 2, 3, 1)  # [B, seg_num_x, period_len, C]
-        s_channel = s_channel.reshape(-1, self.seg_num_x, C)  # [B*period_len, seg_num_x, C]
-        s_channel_attn, _ = self.attn_channel(s_channel, s_channel, s_channel)  # [B*period_len, seg_num_x, C]
-        # Đưa về [B*C, seg_num_x, period_len] để cộng với s_subseq_attn
-        s_channel_attn = s_channel_attn.permute(0, 2, 1)  # [B*period_len, C, seg_num_x]
-        s_channel_attn = s_channel_attn.reshape(B*C, self.period_len, self.seg_num_x).permute(0, 2, 1)  # [B*C, seg_num_x, period_len]
-
-        # Cộng attention lại
-        s = s_subseq_attn + s_channel_attn
+        s_attn, _ = self.attn(s, s, s)
+        s = s + s_attn
 
         s = s.permute(0, 2, 1)  # [B*C, period_len, seg_num_x]
         s = s.reshape(-1, self.seg_num_x)
