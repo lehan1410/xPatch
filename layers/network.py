@@ -24,9 +24,9 @@ class Network(nn.Module):
         )
 
         # Attention giữa các subsequence
-        self.attn_subseq = nn.MultiheadAttention(embed_dim=self.period_len, num_heads=4, batch_first=True)
+        self.attn_subseq = nn.MultiheadAttention(embed_dim=self.period_len, num_heads=2, batch_first=True)
         # Attention giữa các channel
-        self.attn_channel = nn.MultiheadAttention(embed_dim=self.seg_num_x, num_heads=4, batch_first=True)
+        self.attn_channel = nn.MultiheadAttention(embed_dim=self.seg_num_x, num_heads=2, batch_first=True)
 
         self.mlp = nn.Sequential(
             nn.Linear(self.seg_num_x, self.d_model * 2),
