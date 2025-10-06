@@ -103,8 +103,7 @@ class Exp_Main(Exp_Basic):
                 outputs = self.model(batch_x)
                 f_dim = -1 if self.args.features == 'MS' else 0
                 outputs = outputs[:, -self.args.pred_len:, f_dim:]
-                batch_y = batch_y[:, -self.args.pred_len:, f_dim:].to(self.device)
-
+                batch_y = batch_y.contiguous()[:, -self.args.pred_len:, f_dim:].to(self.device)
                 # if train, use ratio to scale the prediction
                 if not is_test:
                     # CARD loss with weight decay
