@@ -15,6 +15,14 @@ class Network(nn.Module):
         self.seg_num_x = self.seq_len // self.period_len
         self.seg_num_y = self.pred_len // self.period_len
 
+        # Thêm Conv1d cho channel independence
+        self.conv1d = nn.Conv1d(
+            in_channels=self.enc_in, out_channels=self.enc_in,
+            kernel_size=1 + 2 * (self.period_len // 2),
+            stride=1, padding=self.period_len // 2,
+            padding_mode="zeros", bias=False, groups=self.enc_in
+        )
+
         self.attn = nn.MultiheadAttention(embed_dim=self.period_len, num_heads=2, batch_first=True)
 
         self.mlp = nn.Sequential(
@@ -40,6 +48,10 @@ class Network(nn.Module):
         C = s.shape[1]
         I = s.shape[2]
         t = torch.reshape(t, (B*C, I))
+
+        # Thêm Conv1d trước khi chia subsequence
+        s_conv = self.conv1d(s)  # [B, C, seq_len]
+        s = s_conv + s
 
         # Chia thành các subsequence
         s = s.reshape(-1, self.seg_num_x, self.period_len)  # [B*C, seg_num_x, period_len]
