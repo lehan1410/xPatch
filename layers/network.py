@@ -15,9 +15,9 @@ class Network(nn.Module):
         self.seg_num_y = self.pred_len // self.period_len
 
         # Attention giữa các segment
-        self.segment_proj = nn.Linear(self.seg_num_x, self.d_model)
+        self.segment_proj = nn.Linear(self.period_len, self.d_model)
         self.attn = nn.MultiheadAttention(embed_dim=self.d_model, num_heads=2, batch_first=True)
-        self.segment_out = nn.Linear(self.d_model, self.seg_num_y)
+        self.segment_out = nn.Linear(self.d_model, self.period_len)
 
         # Linear Stream (giữ nguyên)
         self.fc5 = nn.Linear(seq_len, pred_len)
