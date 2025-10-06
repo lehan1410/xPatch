@@ -30,8 +30,11 @@ class Network(nn.Module):
         )
 
         # Multihead Attention layer
-        self.attention = nn.MultiheadAttention(embed_dim=self.enc_in, num_heads=self.enc_in, batch_first=True)
-
+        self.attn_dim = self.period_len
+        self.attn_heads = 2
+        self.attention = nn.MultiheadAttention(
+            embed_dim=self.attn_dim, num_heads=self.attn_heads, batch_first=True
+        )
         # MLP layers for subsequence processing
         self.mlp = nn.Sequential(
             nn.Linear(self.seg_num_x, self.d_model * 2),
@@ -61,15 +64,13 @@ class Network(nn.Module):
         s_conv = self.conv1d(s)  # [B, C, seq_len]
         s_pool = self.pool(s_conv)  # [B, C, seq_len]
         s = s_pool + s
-        s = s.reshape(-1, self.seg_num_x, self.period_len).permute(0, 2, 1)  # [B, period_len, seg_num_x]
-
-        # Step 3: Apply attention on the subsequences
-        s_attention, _ = self.attention(s, s, s)  # [B, period_len, seg_num_x]
-
-        # Step 4: Process with MLP
-        y = self.mlp(s_attention)
+        s = s.reshape(-1, self.seg_num_x, self.period_len).permute(0, 2, 1)
+        x_attn_input = s.permute(0, 2, 1)  # (bc, n, w)
+        attn_output, _ = self.attention(x_attn_input, x_attn_input, x_attn_input)
+        s = attn_output
+        y = self.mlp(s)
         y = y.permute(0, 2, 1).reshape(B, self.enc_in, self.pred_len)
-        y = y.permute(0, 2, 1)  # [B, pred_len, enc_in]
+        y = y.permute(0, 2, 1)
 
         # Step 5: Linear Stream for t
         t = self.fc5(t)
