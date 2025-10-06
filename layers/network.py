@@ -2,36 +2,45 @@ import torch
 from torch import nn
 
 class Network(nn.Module):
-    def __init__(self, seq_len, pred_len, c_in, period_len, d_model, dropout=0.1):
+    def __init__(self, seq_len, pred_len, c_in, period_len, d_model):
         super(Network, self).__init__()
 
+        # Parameters
         self.pred_len = pred_len
         self.seq_len = seq_len
         self.enc_in  = c_in
-        self.period_len = period_len
-        self.d_model = d_model
-        self.dropout = dropout
+        self.period_len = 24
+        self.d_model = 128
 
-        # Seasonal Stream: Multihead Attention + Linear blocks
-        self.channelAggregator = nn.MultiheadAttention(embed_dim=self.seq_len, num_heads=4, batch_first=True, dropout=0.5)
-        self.input_proj = nn.Linear(self.seq_len, self.d_model)
-        self.model = nn.Sequential(
-            nn.Linear(self.d_model, self.d_model),
-            nn.GELU(),
-            nn.Linear(self.d_model, self.d_model),
-            nn.GELU(),
-        )
-        self.output_proj = nn.Sequential(
-            nn.Dropout(self.dropout),
-            nn.Linear(self.d_model, self.pred_len)
+        self.seg_num_x = self.seq_len // self.period_len
+        self.seg_num_y = self.pred_len // self.period_len
+
+        self.conv1d = nn.Conv1d(
+            in_channels=self.enc_in, out_channels=self.enc_in,
+            kernel_size=1 + 2 * (self.period_len // 2),
+            stride=1, padding=self.period_len // 2,
+            padding_mode="zeros", bias=False, groups=self.enc_in
         )
 
-        # Linear Stream (giữ nguyên như cũ)
-        self.fc5 = nn.Linear(seq_len, pred_len)
+
+        self.pool = nn.AvgPool1d(
+            kernel_size=1 + 2 * (self.period_len // 2),
+            stride=1,
+            padding=self.period_len // 2
+        )
+
+        self.mlp = nn.Sequential(
+            nn.Linear(self.seg_num_x, self.d_model * 2),
+            nn.GELU(),
+            nn.Linear(self.d_model * 2, self.seg_num_y)
+        )
+
+        # Linear Stream
+        self.fc5 = nn.Linear(seq_len, pred_len * 2)
         self.gelu1 = nn.GELU()
-        self.ln1 = nn.LayerNorm(pred_len)
-        self.fc7 = nn.Linear(pred_len, pred_len // 2)
-        self.fc8 = nn.Linear(pred_len // 2, pred_len)
+        self.ln1 = nn.LayerNorm(pred_len * 2)
+        self.fc7 = nn.Linear(pred_len * 2, pred_len)
+        self.fc8 = nn.Linear(pred_len, pred_len)
 
     def forward(self, s, t):
         # s: [Batch, Input, Channel]
@@ -39,19 +48,19 @@ class Network(nn.Module):
         s = s.permute(0,2,1) # [Batch, Channel, Input]
         t = t.permute(0,2,1) # [Batch, Channel, Input]
 
-        B, C, I = s.shape
+        B = s.shape[0]
+        C = s.shape[1]
+        I = s.shape[2]
         t = torch.reshape(t, (B*C, I))
 
-        # Seasonal Stream: Multihead Attention + Linear blocks
-        # Đầu vào cho MultiheadAttention: [Batch*Channel, seq_len] -> [Batch*Channel, 1, seq_len]
-        s_attn_in = s.reshape(B*C, 1, I)  # [B*C, 1, seq_len]
-        # MultiheadAttention expects [batch, seq_len, embed_dim], nhưng ở đây embed_dim=seq_len
-        attn_out, _ = self.channelAggregator(s_attn_in, s_attn_in, s_attn_in)  # [B*C, 1, seq_len]
-        attn_out = attn_out.squeeze(1)  # [B*C, seq_len]
-        s_proj = self.input_proj(attn_out)  # [B*C, d_model]
-        s_feat = self.model(s_proj)         # [B*C, d_model]
-        y = self.output_proj(s_feat)        # [B*C, pred_len]
-        y = y.reshape(B, C, self.pred_len).permute(0, 2, 1)  # [B, pred_len, C]
+        # Seasonal Stream: Conv1d + Pooling
+        s_conv = self.conv1d(s)  # [B, C, seq_len]
+        s_pool = self.pool(s_conv)  # [B, C, seq_len]
+        s = s_pool + s
+        s = s.reshape(-1, self.seg_num_x, self.period_len).permute(0, 2, 1)
+        y = self.mlp(s)
+        y = y.permute(0, 2, 1).reshape(B, self.enc_in, self.pred_len)
+        y = y.permute(0, 2, 1)
 
         # Linear Stream
         t = self.fc5(t)
@@ -60,6 +69,6 @@ class Network(nn.Module):
         t = self.fc7(t)
         t = self.fc8(t)
         t = torch.reshape(t, (B, C, self.pred_len))
-        t = t.permute(0,2,1) # [B, pred_len, C]
+        t = t.permute(0,2,1) # [Batch, Output, Channel] = [B, pred_len, C]
 
         return t + y
