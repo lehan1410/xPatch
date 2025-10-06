@@ -14,10 +14,30 @@ class Network(nn.Module):
         self.seg_num_x = self.seq_len // self.period_len
         self.seg_num_y = self.pred_len // self.period_len
 
-        # Attention giữa các segment
-        self.segment_proj = nn.Linear(self.period_len, self.d_model)
-        self.attn = nn.MultiheadAttention(embed_dim=self.d_model, num_heads=2, batch_first=True)
-        self.segment_out = nn.Linear(self.d_model, self.period_len)
+        # 1D convolution layer
+        self.conv1d = nn.Conv1d(
+            in_channels=self.enc_in, out_channels=self.enc_in,
+            kernel_size=1 + 2 * (self.period_len // 2),
+            stride=1, padding=self.period_len // 2,
+            padding_mode="zeros", bias=False, groups=self.enc_in
+        )
+
+        # Average Pooling layer
+        self.pool = nn.AvgPool1d(
+            kernel_size=1 + 2 * (self.period_len // 2),
+            stride=1,
+            padding=self.period_len // 2
+        )
+
+        # Multihead Attention layer
+        self.attention = nn.MultiheadAttention(embed_dim=self.enc_in, num_heads=2, batch_first=True)
+
+        # MLP layers for subsequence processing
+        self.mlp = nn.Sequential(
+            nn.Linear(self.seg_num_x, self.d_model * 2),
+            nn.GELU(),
+            nn.Linear(self.d_model * 2, self.seg_num_y)
+        )
 
         # Linear Stream (giữ nguyên)
         self.fc5 = nn.Linear(seq_len, pred_len)
@@ -29,30 +49,36 @@ class Network(nn.Module):
     def forward(self, s, t):
         # s: [Batch, Input, Channel]
         # t: [Batch, Input, Channel]
-        s = s.permute(0,2,1) # [Batch, Channel, Input]
-        t = t.permute(0,2,1) # [Batch, Channel, Input]
+
+        # Step 1: Preprocess inputs
+        s = s.permute(0, 2, 1)  # [Batch, Channel, Input]
+        t = t.permute(0, 2, 1)  # [Batch, Channel, Input]
 
         B, C, I = s.shape
-        t = torch.reshape(t, (B*C, I))
+        t = torch.reshape(t, (B * C, I))
 
-        # Seasonal Stream: chia thành các segment nhỏ
-        s_segs = s.reshape(B*C, self.seg_num_x, self.period_len)  # [B*C, seg_num_x, period_len]
-        s_proj = self.segment_proj(s_segs)  # [B*C, seg_num_x, d_model]
-        # Attention giữa các segment
-        attn_out, _ = self.attn(s_proj, s_proj, s_proj)  # [B*C, seg_num_x, d_model]
-        # Dự đoán từng segment output
-        seg_outputs = self.segment_out(attn_out)  # [B*C, seg_num_x, period_len]
-        # Ghép lại thành chuỗi cuối cùng
-        y = seg_outputs.reshape(B, C, self.pred_len)
-        y = y.permute(0,2,1)  # [B, pred_len, C]
+        # Step 2: Apply convolution and pooling to s
+        s_conv = self.conv1d(s)  # [B, C, seq_len]
+        s_pool = self.pool(s_conv)  # [B, C, seq_len]
+        s = s_pool + s
+        s = s.reshape(-1, self.seg_num_x, self.period_len).permute(0, 2, 1)  # [B, period_len, seg_num_x]
 
-        # Linear Stream
+        # Step 3: Apply attention on the subsequences
+        s_attention, _ = self.attention(s, s, s)  # [B, period_len, seg_num_x]
+
+        # Step 4: Process with MLP
+        y = self.mlp(s_attention)
+        y = y.permute(0, 2, 1).reshape(B, self.enc_in, self.pred_len)
+        y = y.permute(0, 2, 1)  # [B, pred_len, enc_in]
+
+        # Step 5: Linear Stream for t
         t = self.fc5(t)
         t = self.gelu1(t)
         t = self.ln1(t)
         t = self.fc7(t)
         t = self.fc8(t)
         t = torch.reshape(t, (B, C, self.pred_len))
-        t = t.permute(0,2,1) # [B, pred_len, C]
+        t = t.permute(0, 2, 1)  # [B, pred_len, C]
 
+        # Step 6: Combine the outputs from attention and linear stream
         return t + y
