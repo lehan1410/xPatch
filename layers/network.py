@@ -15,22 +15,7 @@ class Network(nn.Module):
         self.seg_num_x = self.seq_len // self.period_len
         self.seg_num_y = self.pred_len // self.period_len
 
-        self.conv1d = nn.Conv1d(
-            in_channels=self.enc_in, out_channels=self.enc_in,
-            kernel_size=1 + 2 * (self.period_len // 2),
-            stride=1, padding=self.period_len // 2,
-            padding_mode="zeros", bias=False, groups=self.enc_in
-        )
-
-
-        self.pool = nn.AvgPool1d(
-            kernel_size=1 + 2 * (self.period_len // 2),
-            stride=1,
-            padding=self.period_len // 2
-        )
-
         self.attn = nn.MultiheadAttention(embed_dim=self.period_len, num_heads=2, batch_first=True)
-
 
         self.mlp = nn.Sequential(
             nn.Linear(self.seg_num_x, self.d_model * 2),
@@ -56,12 +41,10 @@ class Network(nn.Module):
         I = s.shape[2]
         t = torch.reshape(t, (B*C, I))
 
-        # Seasonal Stream: Conv1d + Pooling
-        s_conv = self.conv1d(s)  # [B, C, seq_len]
-        s_pool = self.pool(s_conv)  # [B, C, seq_len]
-        s = s_pool + s
-        s = s.reshape(-1, self.seg_num_x, self.period_len)
+        # Chia thành các subsequence
+        s = s.reshape(-1, self.seg_num_x, self.period_len)  # [B*C, seg_num_x, period_len]
 
+        # Attention giữa các subsequence
         s_attn, _ = self.attn(s, s, s)
         s = s + s_attn
 
@@ -71,7 +54,7 @@ class Network(nn.Module):
         y = self.mlp(s)
         y = y.reshape(B, C, self.period_len, self.seg_num_y)
         y = y.permute(0, 1, 2, 3).reshape(B, C, self.pred_len)
-        y = y.permute(0, 2, 1)
+        y = y.permute(0, 2, 1)  # [B, pred_len, C]
 
         # Linear Stream
         t = self.fc5(t)
@@ -80,6 +63,6 @@ class Network(nn.Module):
         t = self.fc7(t)
         t = self.fc8(t)
         t = torch.reshape(t, (B, C, self.pred_len))
-        t = t.permute(0,2,1) # [Batch, Output, Channel] = [B, pred_len, C]
+        t = t.permute(0,2,1) # [Batch, pred_len, Channel]
 
         return t + y
