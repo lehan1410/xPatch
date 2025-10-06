@@ -30,7 +30,7 @@ class Network(nn.Module):
         )
 
         # Multihead Attention layer
-        self.attention = nn.MultiheadAttention(embed_dim=self.enc_in, num_heads=2, batch_first=True)
+        self.attention = nn.MultiheadAttention(embed_dim=self.enc_in, num_heads=self.enc_in, batch_first=True)
 
         # MLP layers for subsequence processing
         self.mlp = nn.Sequential(
