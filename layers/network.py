@@ -60,7 +60,7 @@ class Network(nn.Module):
         s_conv = self.conv1d(s)  # [B, C, seq_len]
         s_pool = self.pool(s_conv)  # [B, C, seq_len]
         s = s_pool + s
-        s = s.reshape(-1, self.seg_num_x, self.period_len).permute(0, 2, 1)
+        s = s.reshape(-1, self.seg_num_x, self.period_len)
 
         s_attn, _ = self.attn(s, s, s)
         s = s + s_attn
