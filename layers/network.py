@@ -2,24 +2,31 @@ import torch
 from torch import nn
 
 class Network(nn.Module):
-    def __init__(self, seq_len, pred_len, c_in, period_len, d_model):
+    def __init__(self, seq_len, pred_len, c_in, period_len, d_model, dropout=0.1):
         super(Network, self).__init__()
 
-        # Parameters
         self.pred_len = pred_len
         self.seq_len = seq_len
         self.enc_in  = c_in
-        self.period_len = 24
-        self.d_model = 128
+        self.period_len = period_len
+        self.d_model = d_model
+        self.dropout = dropout
 
-        self.seg_num_x = self.seq_len // self.period_len
-        self.seg_num_y = self.pred_len // self.period_len
+        # Seasonal Stream: Multihead Attention + Linear blocks
+        self.channelAggregator = nn.MultiheadAttention(embed_dim=self.seq_len, num_heads=4, batch_first=True, dropout=0.5)
+        self.input_proj = nn.Linear(self.seq_len, self.d_model)
+        self.model = nn.Sequential(
+            nn.Linear(self.d_model, self.d_model),
+            nn.GELU(),
+            nn.Linear(self.d_model, self.d_model),
+            nn.GELU(),
+        )
+        self.output_proj = nn.Sequential(
+            nn.Dropout(self.dropout),
+            nn.Linear(self.d_model, self.pred_len)
+        )
 
-        self.input_proj = nn.Linear(self.period_len, self.d_model)
-        self.mha = nn.MultiheadAttention(embed_dim=self.d_model, num_heads=2, batch_first=True)
-        self.seasonal_out = nn.Linear(self.d_model, self.period_len)
-
-        # Linear Stream
+        # Linear Stream (giữ nguyên như cũ)
         self.fc5 = nn.Linear(seq_len, pred_len)
         self.gelu1 = nn.GELU()
         self.ln1 = nn.LayerNorm(pred_len)
@@ -32,19 +39,19 @@ class Network(nn.Module):
         s = s.permute(0,2,1) # [Batch, Channel, Input]
         t = t.permute(0,2,1) # [Batch, Channel, Input]
 
-        B = s.shape[0]
-        C = s.shape[1]
-        I = s.shape[2]
+        B, C, I = s.shape
         t = torch.reshape(t, (B*C, I))
 
-        # Seasonal Stream: Conv1d + Pooling
-        s_segs = s.reshape(B*C, self.seg_num_x, self.period_len)  # [B*C, seg_num_x, period_len]
-        s_proj = self.input_proj(s_segs)  # [B*C, seg_num_x, d_model]
-        attn_out, _ = self.mha(s_proj, s_proj, s_proj)  # [B*C, seg_num_x, d_model]
-        seasonal_feat = attn_out.mean(dim=1)  # [B*C, d_model]
-        y = self.seasonal_out(seasonal_feat)  # [B*C, period_len]
-        y = y.repeat(1, self.seg_num_y)  # [B*C, pred_len]
-        y = y.reshape(B, C, self.pred_len).permute(0,2,1)
+        # Seasonal Stream: Multihead Attention + Linear blocks
+        # Đầu vào cho MultiheadAttention: [Batch*Channel, seq_len] -> [Batch*Channel, 1, seq_len]
+        s_attn_in = s.reshape(B*C, 1, I)  # [B*C, 1, seq_len]
+        # MultiheadAttention expects [batch, seq_len, embed_dim], nhưng ở đây embed_dim=seq_len
+        attn_out, _ = self.channelAggregator(s_attn_in, s_attn_in, s_attn_in)  # [B*C, 1, seq_len]
+        attn_out = attn_out.squeeze(1)  # [B*C, seq_len]
+        s_proj = self.input_proj(attn_out)  # [B*C, d_model]
+        s_feat = self.model(s_proj)         # [B*C, d_model]
+        y = self.output_proj(s_feat)        # [B*C, pred_len]
+        y = y.reshape(B, C, self.pred_len).permute(0, 2, 1)  # [B, pred_len, C]
 
         # Linear Stream
         t = self.fc5(t)
@@ -53,6 +60,6 @@ class Network(nn.Module):
         t = self.fc7(t)
         t = self.fc8(t)
         t = torch.reshape(t, (B, C, self.pred_len))
-        t = t.permute(0,2,1) # [Batch, Output, Channel] = [B, pred_len, C]
+        t = t.permute(0,2,1) # [B, pred_len, C]
 
         return t + y
