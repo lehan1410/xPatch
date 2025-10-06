@@ -68,6 +68,7 @@ class Network(nn.Module):
         x_attn_input = s.permute(0, 2, 1)  # (bc, n, w)
         attn_output, _ = self.attention(x_attn_input, x_attn_input, x_attn_input)
         s = attn_output
+        s = s.reshape(-1, self.seg_num_x)
         y = self.mlp(s)
         y = y.permute(0, 2, 1).reshape(B, self.enc_in, self.pred_len)
         y = y.permute(0, 2, 1)
