@@ -70,7 +70,7 @@ class Network(nn.Module):
 
         y = self.mlp(s)
         y = y.reshape(B, C, self.period_len, self.seg_num_y)
-        y = y.permute(0, 2, 3, 1).reshape(B, self.pred_len, C)
+        y = y.permute(0, 1, 2, 3).reshape(B, C, self.pred_len)
         y = y.permute(0, 2, 1)
 
         # Linear Stream
