@@ -75,7 +75,7 @@ class Network(nn.Module):
         subseq_feat = attn_out_subseq.mean(dim=2)  # [B, seg_num_x, C]
         # Dự báo cho từng subsequence
         y = self.mlp(subseq_feat.permute(0,2,1))  # [B, C, seg_num_y]
-        y = y.permute(0,2,1).reshape(B, C, self.pred_len)
+        y = torch.nn.functional.interpolate(y, size=self.pred_len, mode='linear', align_corners=False)  # [B, C, pred_len]
         y = y.permute(0,2,1)  # [B, pred_len, C]
 
         # Linear Stream
