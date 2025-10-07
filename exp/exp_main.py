@@ -76,7 +76,7 @@ class Exp_Main(Exp_Basic):
                 dec_inp = torch.zeros_like(batch_y[:, -self.args.pred_len:, :]).float()
                 dec_inp = torch.cat([batch_y[:, :self.args.label_len, :], dec_inp], dim=1).float().to(self.device)
                 # encoder - decoder
-                outputs = self.model(batch_x)
+                outputs = self.model(batch_x, batch_x_mark)
                 f_dim = -1 if self.args.features == 'MS' else 0
                 outputs = outputs[:, -self.args.pred_len:, f_dim:]
                 batch_y = batch_y[:, -self.args.pred_len:, f_dim:].to(self.device)
@@ -168,7 +168,7 @@ class Exp_Main(Exp_Basic):
 
                 # encoder - decoder
                 # temp = time.time() # For computational cost analysis
-                outputs = self.model(batch_x)
+                outputs = self.model(batch_x, batch_x_mark)
                 # train_time += time.time() - temp # For computational cost analysis
                 f_dim = -1 if self.args.features == 'MS' else 0
                 outputs = outputs[:, -self.args.pred_len:, f_dim:]
@@ -277,7 +277,7 @@ class Exp_Main(Exp_Basic):
                 dec_inp = torch.cat([batch_y[:, :self.args.label_len, :], dec_inp], dim=1).float().to(self.device)
                 # encoder - decoder
                 # temp = time.time() # For computational cost analysis
-                outputs = self.model(batch_x)
+                outputs = self.model(batch_x, batch_x_mark)
                 # test_time += time.time() - temp # For computational cost analysis
 
                 f_dim = -1 if self.args.features == 'MS' else 0
