@@ -12,12 +12,24 @@ import os
 import time
 import warnings
 import math
+import psutil
 
 warnings.filterwarnings('ignore')
+def test_model_size(model, filename='temp_model.pt'):
+    torch.save(model.state_dict(), filename)
+    size_mb = os.path.getsize(filename) / (1024 ** 2)
+    print(f"[MODEL SIZE] Model file size: {size_mb:.2f} MB")
+    os.remove(filename)
+
+def test_params_memory(model, input_shape):
+    # Tính số lượng tham số
+    total_params = sum(p.numel() for p in model.parameters())
+    print(f"[PARAMS] Total parameters: {total_params:,}")
 
 class Exp_Main(Exp_Basic):
     def __init__(self, args):
         super(Exp_Main, self).__init__(args)
+
 
     def _build_model(self):
         model_dict = {
@@ -111,6 +123,8 @@ class Exp_Main(Exp_Basic):
         model_optim = self._select_optimizer()
         # criterion = self._select_criterion() # For MSE criterion
         mse_criterion, mae_criterion = self._select_criterion()
+        self.print_model_info()
+        epoch_times = []
 
         # # CARD's cosine learning rate decay with warmup
         # self.warmup_epochs = self.args.warmup_epochs
@@ -165,13 +179,20 @@ class Exp_Main(Exp_Basic):
                 # self.ratio = np.array([max(1/np.sqrt(i+1),0.0) for i in range(self.args.pred_len)])
 
                 # Arctangent loss with weight decay
-                self.ratio = np.array([-1 * math.atan(i+1) + math.pi/4 + 1 for i in range(self.args.pred_len)])
+                # self.ratio = np.array([-1 * math.atan(i+1) + math.pi/4 + 1 for i in range(self.args.pred_len)])
+                alpha = 0.02  # Điều chỉnh tốc độ giảm
+                beta = 0.8    # Trọng số tối thiểu
+                self.ratio = np.array([
+                    beta + (1 - beta) * np.exp(-alpha * i) 
+                    for i in range(self.args.pred_len)
+                ])
                 self.ratio = torch.tensor(self.ratio).unsqueeze(-1).to('cuda')
 
                 outputs = outputs * self.ratio
                 batch_y = batch_y * self.ratio
 
                 loss = mae_criterion(outputs, batch_y)
+                # loss = 0.5 * mse_criterion(outputs, batch_y) + 0.5 * mae_criterion(outputs, batch_y)
 
                 # loss = criterion(outputs, batch_y) # For MSE criterion
 
@@ -188,11 +209,20 @@ class Exp_Main(Exp_Basic):
                 loss.backward()
                 model_optim.step()
 
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+                mem = torch.cuda.max_memory_allocated(device=self.device) / (1024 ** 2)
+                print(f"[TRAIN MEMORY] Max memory allocated in epoch {epoch+1}: {mem:.2f} MB")
+                torch.cuda.reset_peak_memory_stats(device=self.device)
+            else:
+                print("[TRAIN MEMORY] CUDA not available, cannot measure GPU memory.")
             # train_times.append(train_time/len(train_loader)) # For computational cost analysis
+            epoch_duration = time.time() - epoch_time
+            epoch_times.append(epoch_duration)  
             print("Epoch: {} cost time: {}".format(epoch + 1, time.time() - epoch_time))
             train_loss = np.average(train_loss)
             # vali_loss = self.vali(vali_data, vali_loader, criterion) # For MSE criterion
-            # test_loss = self.vali(test_data, test_loader, criterion) # For MSE criterion
+            # test_loss = self.vali(test_data, test_loader, critericoston) # For MSE criterion
             vali_loss = self.vali(vali_data, vali_loader, mae_criterion, is_test=False)
             test_loss = self.vali(test_data, test_loader, mse_criterion)
 
@@ -211,6 +241,9 @@ class Exp_Main(Exp_Basic):
             # print('Beta:', self.model.decomp.ma.beta)   # Print the learned beta
 
         # print("Training time: {}".format(np.sum(train_times)/len(train_times))) # For computational cost analysis
+        avg_epoch_time = np.mean(epoch_times)
+        print(f"Average epoch time: {avg_epoch_time:.2f} seconds")
+
         best_model_path = path + '/' + 'checkpoint.pth'
         self.model.load_state_dict(torch.load(best_model_path))
         os.remove(best_model_path)
@@ -266,6 +299,9 @@ class Exp_Main(Exp_Basic):
                     pd = np.concatenate((input[0, :, -1], pred[0, :, -1]), axis=0)
                     visual(gt, pd, os.path.join(folder_path, str(i) + '.pdf'))
             
+        print("\n--- Model Statistics ---")
+        test_model_size(self.model)
+        test_params_memory(self.model, (batch_x.shape[1], batch_x.shape[2]))
         # print("Inference time: {}".format(test_time/len(test_loader))) # For computational cost analysis
         preds = np.array(preds)
         trues = np.array(trues)
