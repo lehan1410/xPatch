@@ -123,7 +123,6 @@ class Exp_Main(Exp_Basic):
         model_optim = self._select_optimizer()
         # criterion = self._select_criterion() # For MSE criterion
         mse_criterion, mae_criterion = self._select_criterion()
-        self.print_model_info()
         epoch_times = []
 
         # # CARD's cosine learning rate decay with warmup
