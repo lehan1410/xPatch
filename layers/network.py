@@ -2,6 +2,56 @@ import torch
 from torch import nn
 import math
 
+class SeasonalPatternAttention(nn.Module):
+    def __init__(self, period_len, num_patterns=4):
+        super().__init__()
+        
+        # Các mẫu mùa vụ điển hình có thể học được
+        self.patterns = nn.Parameter(torch.randn(num_patterns, period_len))
+        
+        # Projection để tính toán attention scores
+        self.query_proj = nn.Linear(period_len, period_len)
+        self.key_proj = nn.Linear(period_len, period_len)
+        self.value_proj = nn.Linear(period_len, period_len)
+        
+    def forward(self, x):
+        # x: [B*C, seg_num_x, period_len]
+        
+        batch_size, seg_num = x.shape[0], x.shape[1]
+        
+        # Mở rộng patterns cho tất cả batch và segments
+        patterns = self.patterns.unsqueeze(0).unsqueeze(0)  # [1, 1, num_patterns, period_len]
+        patterns = patterns.expand(batch_size, seg_num, -1, -1)  # [B*C, seg_num_x, num_patterns, period_len]
+        
+        # Tính toán attention scores
+        queries = self.query_proj(x).unsqueeze(2)  # [B*C, seg_num_x, 1, period_len]
+        keys = self.key_proj(patterns)  # [B*C, seg_num_x, num_patterns, period_len]
+        
+        # Attention scores
+        scores = torch.matmul(queries, keys.transpose(-1, -2)) / (self.patterns.shape[-1] ** 0.5)
+        attention = torch.softmax(scores, dim=-1)  # [B*C, seg_num_x, 1, num_patterns]
+        
+        # Apply attention
+        values = self.value_proj(patterns)  # [B*C, seg_num_x, num_patterns, period_len]
+        seasonal_patterns = torch.matmul(attention, values).squeeze(2)  # [B*C, seg_num_x, period_len]
+        
+        # Kết hợp với dữ liệu gốc
+        return x + seasonal_patterns
+
+class SegmentInteraction(nn.Module):
+    def __init__(self, seq_len, period_len):
+        super().__init__()
+        self.segment_ffn = nn.Sequential(
+            nn.Linear(period_len, period_len*2),
+            nn.GELU(),
+            nn.Linear(period_len*2, period_len)
+        )
+        self.norm = nn.LayerNorm(period_len)
+        
+    def forward(self, x):
+        # x: [B*C, seg_num_x, period_len]
+        return x + self.norm(self.segment_ffn(x))
+
 class Network(nn.Module):
     def __init__(self, seq_len, pred_len, c_in, period_len, d_model):
         super(Network, self).__init__()
@@ -23,27 +73,16 @@ class Network(nn.Module):
         # Thêm positional encoding
         self.pos_encoder = PositionalEncoding(self.period_len, dropout=0.1)
         
-        # Conv1D và Pooling
-        self.conv1d = nn.Conv1d(
-            in_channels=self.enc_in, out_channels=self.enc_in,
-            kernel_size=1 + 2 * (self.period_len // 2),
-            stride=1, padding=self.period_len // 2,
-            padding_mode="zeros", bias=False, groups=self.enc_in
-        )
-
-        self.pool = nn.AvgPool1d(
-            kernel_size=1 + 2 * (self.period_len // 2),
-            stride=1, padding=self.period_len // 2
+        # SeasonalPatternAttention
+        self.seasonal_pattern_attn = SeasonalPatternAttention(
+            period_len=self.period_len,
+            num_patterns=8  # Số lượng mẫu mùa vụ cần học
         )
         
-        # Attention
-        num_heads = 2
-            
-        self.segment_attention = nn.MultiheadAttention(
-            embed_dim=self.period_len,
-            num_heads=num_heads,
-            batch_first=True,
-            dropout=0.1
+        # Thay thế MultiheadAttention bằng SegmentInteraction
+        self.segment_interaction = SegmentInteraction(
+            seq_len=seq_len,
+            period_len=period_len
         )
         
         # Normalization layer
@@ -53,7 +92,6 @@ class Network(nn.Module):
         self.mlp = nn.Sequential(
             nn.Linear(self.seg_num_x, self.d_model * 2),
             nn.GELU(),
-            nn.Dropout(0.1),
             nn.Linear(self.d_model * 2, self.seg_num_y)
         )
 
@@ -77,13 +115,11 @@ class Network(nn.Module):
         I = s.shape[2]
         t = torch.reshape(t, (B*C, I))
 
-        # Seasonal Stream
-        s_conv = self.conv1d(s)  # [B, C, seq_len]
-        s_pool = self.pool(s_conv)  # [B, C, seq_len]
-        s = s_pool + s
-        
-        # Reshape
+        # Reshape directly without using conv1d and pool
         s = s.reshape(-1, self.seg_num_x, self.period_len)  # [B*C, seg_num_x, period_len]
+        
+        # Apply SeasonalPatternAttention
+        s = self.seasonal_pattern_attn(s)
         
         # Thêm thông tin thời gian nếu có
         if seq_x_mark is not None:
@@ -97,15 +133,14 @@ class Network(nn.Module):
             time_embed = time_embed.unsqueeze(1).expand(-1, C, -1, -1)  # [B, C, seg_num_x, d_model]
             time_embed = time_embed.reshape(B*C, self.seg_num_x, -1)  # [B*C, seg_num_x, d_model]
             
-            # Inject time information (đơn giản hóa cách truyền thông tin thời gian)
+            # Inject time information
             s = s + time_embed[:, :, :self.period_len]
         
         # Thêm positional encoding
         s = self.pos_encoder(s)
         
-        # Attention
-        s_attn, _ = self.segment_attention(s, s, s)
-        s = s + s_attn  # Residual connection
+        # Segment interaction (thay thế cho MultiheadAttention)
+        s = self.segment_interaction(s)
         
         # Normalization
         s = self.norm1(s)
