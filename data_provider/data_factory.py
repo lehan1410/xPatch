@@ -45,7 +45,7 @@ def data_provider(args, flag):
         target=args.target,
         timeenc=timeenc,
         freq=freq,
-        train_only=train_only
+        cycle=args.period_len,
     )
     print(flag, len(data_set))
     data_loader = DataLoader(
