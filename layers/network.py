@@ -1,5 +1,6 @@
 import torch
 from torch import nn
+import math
 
 class Network(nn.Module):
     def __init__(self, seq_len, pred_len, c_in, period_len, d_model):
@@ -15,6 +16,10 @@ class Network(nn.Module):
         self.seg_num_x = self.seq_len // self.period_len
         self.seg_num_y = self.pred_len // self.period_len
 
+        # Thêm xử lý đặc trưng thời gian từ seq_x_mark (thường có 4-5 đặc trưng thời gian)
+        self.time_features = 4  # month, day, weekday, hour (có thể thêm minute)
+        self.time_embedding = nn.Linear(self.time_features, self.period_len)
+        
         self.conv1d = nn.Conv1d(
             in_channels=self.enc_in, out_channels=self.enc_in,
             kernel_size=1 + 2 * (self.period_len // 2),
@@ -28,20 +33,18 @@ class Network(nn.Module):
             padding=self.period_len // 2
         )
         
-        # Thêm MultiheadAttention cho phân đoạn thời gian
-        # Đảm bảo num_heads là ước của period_len
-        num_heads = 2
-        if self.period_len % num_heads != 0:
-            # Tìm số heads phù hợp nhất
-            for h in range(num_heads, 0, -1):
-                if self.period_len % h == 0:
-                    num_heads = h
-                    break
-        
+        # Segment attention with time-aware capability
         self.segment_attention = nn.MultiheadAttention(
             embed_dim=self.period_len,
-            num_heads=num_heads,
+            num_heads=2,
             batch_first=True
+        )
+        
+        # Thêm layer để kết hợp thông tin thời gian với biểu diễn segment
+        self.time_fusion = nn.Sequential(
+            nn.Linear(self.period_len * 2, self.period_len),
+            nn.GELU(),
+            nn.Linear(self.period_len, self.period_len)
         )
 
         self.mlp = nn.Sequential(
@@ -57,9 +60,11 @@ class Network(nn.Module):
         self.fc7 = nn.Linear(pred_len * 2, pred_len)
         self.fc8 = nn.Linear(pred_len, pred_len)
 
-    def forward(self, s, t, seq_x_mark=None):
+    def forward(self, s, t, seq_x_mark):
         # s: [Batch, Input, Channel]
         # t: [Batch, Input, Channel]
+        # seq_x_mark: [Batch, Input, TimeFeatures]
+        
         s = s.permute(0,2,1) # [Batch, Channel, Input]
         t = t.permute(0,2,1) # [Batch, Channel, Input]
 
@@ -75,6 +80,26 @@ class Network(nn.Module):
         
         # Reshape cho phân đoạn
         s = s.reshape(-1, self.seg_num_x, self.period_len)  # [B*C, seg_num_x, period_len]
+        
+        # Xử lý thông tin thời gian từ seq_x_mark
+        if seq_x_mark is not None:
+            # Chuyển đổi seq_x_mark thành thông tin có ích cho mô hình
+            time_embed = self.time_embedding(seq_x_mark)  # [B, Input, period_len]
+            
+            # Reshape để phân đoạn theo cùng cách với dữ liệu đầu vào
+            time_embed = time_embed.reshape(B, self.seg_num_x, self.period_len)
+            
+            # Mở rộng để áp dụng cho mỗi kênh
+            time_embed = time_embed.unsqueeze(1).expand(-1, C, -1, -1)  # [B, C, seg_num_x, period_len]
+            time_embed = time_embed.reshape(B*C, self.seg_num_x, self.period_len)  # [B*C, seg_num_x, period_len]
+            
+            # Kết hợp thông tin thời gian với biểu diễn dữ liệu
+            combined = torch.cat([s, time_embed], dim=-1)  # [B*C, seg_num_x, period_len*2]
+            s_with_time = self.time_fusion(combined.reshape(-1, self.period_len*2))
+            s_with_time = s_with_time.reshape(-1, self.seg_num_x, self.period_len)
+            
+            # Sử dụng biểu diễn kết hợp cho attention
+            s = s_with_time
         
         # Áp dụng segment attention cho mối quan hệ thời gian
         s_attn, _ = self.segment_attention(s, s, s)
