@@ -83,27 +83,33 @@ class Network(nn.Module):
         
         # Xử lý thông tin thời gian từ seq_x_mark
         if seq_x_mark is not None:
-            # Chuyển đổi seq_x_mark thành thông tin có ích cho mô hình
-            time_embed = self.time_embedding(seq_x_mark)  # [B, Input, period_len]
+            # Phân đoạn thời gian tương tự như dữ liệu
+            time_features = seq_x_mark.shape[-1]  # Số lượng đặc trưng thời gian
             
-            # Reshape để phân đoạn theo cùng cách với dữ liệu đầu vào
-            time_embed = time_embed.reshape(B, self.seg_num_x, self.period_len)
+            # Reshape seq_x_mark để khớp với phân đoạn
+            seq_x_mark_segmented = seq_x_mark.reshape(B, self.seg_num_x, self.period_len, time_features)
             
-            # Mở rộng để áp dụng cho mỗi kênh
+            # Trung bình theo period_len để có đặc trưng cho mỗi phân đoạn
+            seq_x_mark_avg = torch.mean(seq_x_mark_segmented, dim=2)  # [B, seg_num_x, time_features]
+            
+            # Tạo embedding cho mỗi phân đoạn thời gian
+            time_embed = self.time_embedding(seq_x_mark_avg)  # [B, seg_num_x, period_len]
+            
+            # Mở rộng cho mỗi kênh
             time_embed = time_embed.unsqueeze(1).expand(-1, C, -1, -1)  # [B, C, seg_num_x, period_len]
             time_embed = time_embed.reshape(B*C, self.seg_num_x, self.period_len)  # [B*C, seg_num_x, period_len]
             
-            # Kết hợp thông tin thời gian với biểu diễn dữ liệu
+            # Kết hợp với biểu diễn segment
             combined = torch.cat([s, time_embed], dim=-1)  # [B*C, seg_num_x, period_len*2]
             s_with_time = self.time_fusion(combined.reshape(-1, self.period_len*2))
             s_with_time = s_with_time.reshape(-1, self.seg_num_x, self.period_len)
             
-            # Sử dụng biểu diễn kết hợp cho attention
+            # Sử dụng biểu diễn kết hợp
             s = s_with_time
         
-        # Áp dụng segment attention cho mối quan hệ thời gian
+        # Tiếp tục như bình thường
         s_attn, _ = self.segment_attention(s, s, s)
-        s = s + s_attn  # Residual connection để giữ thông tin gốc
+        s = s + s_attn  # Residual connection
         
         # Tiếp tục xử lý như cũ
         s = s.permute(0, 2, 1)  # [B*C, period_len, seg_num_x]
@@ -118,6 +124,6 @@ class Network(nn.Module):
         t = self.fc7(t)
         t = self.fc8(t)
         t = torch.reshape(t, (B, C, self.pred_len))
-        t = t.permute(0,2,1) # [Batch, Output, Channel] = [B, pred_len, C]
+        t = t.permute(0,2,1)
 
         return t + y
