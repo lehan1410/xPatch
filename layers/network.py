@@ -33,7 +33,7 @@ class Network(nn.Module):
         # Thêm cơ chế Attention cho phân đoạn
         self.segment_attention = nn.MultiheadAttention(
             embed_dim=self.period_len,
-            num_heads=4,
+            num_heads=2,
             batch_first=True
         )
         
