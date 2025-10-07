@@ -14,19 +14,17 @@ class Network(nn.Module):
         self.seg_num_x = self.seq_len // self.period_len
         self.seg_num_y = self.pred_len // self.period_len
 
-        # Dùng Conv1d để tổng hợp đặc trưng thời gian cho từng subsequence
-        self.time_encoder_conv = nn.Conv1d(
-            in_channels=time_feat_dim, out_channels=self.period_len,
-            kernel_size=1, stride=1
-        )
+        # Attention giữa các channel tại mỗi bước thời gian
+        self.channel_attn = nn.MultiheadAttention(embed_dim=self.enc_in, num_heads=1, batch_first=True)
 
-        # Attention giữa các subsequence
-        self.attn_subseq = nn.MultiheadAttention(embed_dim=self.period_len, num_heads=2, batch_first=True)
+        # Encode time features để làm query
+        self.time_encoder = nn.Linear(time_feat_dim, self.enc_in)
 
+        # MLP cho từng subsequence
         self.mlp = nn.Sequential(
-            nn.Linear(self.seg_num_x, self.d_model * 2),
+            nn.Linear(self.enc_in, self.d_model * 2),
             nn.GELU(),
-            nn.Linear(self.d_model * 2, self.seg_num_y)
+            nn.Linear(self.d_model * 2, self.period_len)
         )
 
         # Linear Stream
@@ -43,35 +41,30 @@ class Network(nn.Module):
         s = s.permute(0,2,1) # [Batch, Channel, Input]
         t = t.permute(0,2,1) # [Batch, Channel, Input]
 
-        B = s.shape[0]
-        C = s.shape[1]
-        I = s.shape[2]
+        B, C, I = s.shape
         t = torch.reshape(t, (B*C, I))
 
+        # Encode time features để làm query cho attention channel
+        time_query = self.time_encoder(seq_x_mark)  # [B, seq_len, enc_in]
+
+        # Attention giữa các channel tại mỗi bước thời gian
+        attn_out, _ = self.channel_attn(
+            query=time_query, key=s.permute(0,2,1), value=s.permute(0,2,1)
+        )  # [B, seq_len, enc_in]
+
         # Chia thành các subsequence
-        s_subseq = s.reshape(-1, self.seg_num_x, self.period_len)  # [B*C, seg_num_x, period_len]
+        attn_out_subseq = attn_out.reshape(B, self.seg_num_x, self.period_len, self.enc_in)  # [B, seg_num_x, period_len, enc_in]
 
-        # Chia time features thành subsequence
-        time_subseq = seq_x_mark.unsqueeze(1).repeat(1, C, 1, 1)  # [B, C, seq_len, time_feat_dim]
-        time_subseq = time_subseq.reshape(-1, self.seg_num_x, self.period_len, seq_x_mark.shape[-1])  # [B*C, seg_num_x, period_len, time_feat_dim]
-        # Dùng Conv1d để tổng hợp đặc trưng thời gian cho mỗi subsequence
-        time_subseq_reshape = time_subseq.permute(0, 1, 3, 2)  # [B*C, seg_num_x, time_feat_dim, period_len]
-        time_emb = self.time_encoder_conv(
-            time_subseq_reshape.reshape(-1, time_subseq_reshape.shape[2], self.period_len)
-        )  # [B*C*seg_num_x, period_len]
-        time_emb = time_emb.view(-1, self.seg_num_x, self.period_len)
-        # Attention giữa các subsequence, dùng time embedding làm query
-        s_subseq_attn, _ = self.attn_subseq(time_emb, s_subseq, s_subseq)  # [B*C, seg_num_x, period_len]
+        # Lấy đặc trưng cho mỗi subsequence (mean theo period_len)
+        subseq_feat = attn_out_subseq.mean(dim=2)  # [B, seg_num_x, enc_in]
 
-        s = s_subseq_attn
+        # Dự báo cho từng subsequence
+        y = self.mlp(subseq_feat)  # [B, seg_num_x, period_len]
+        y = y.reshape(B, self.seg_num_x * self.period_len, 1)  # [B, seq_len, 1]
+        y = y.squeeze(-1)  # [B, seq_len]
 
-        s = s.permute(0, 2, 1)  # [B*C, period_len, seg_num_x]
-        s = s.reshape(-1, self.seg_num_x)
-
-        y = self.mlp(s)
-        y = y.reshape(B, C, self.period_len, self.seg_num_y)
-        y = y.permute(0, 1, 2, 3).reshape(B, C, self.pred_len)
-        y = y.permute(0, 2, 1)  # [B, pred_len, C]
+        # Nếu muốn output shape [B, pred_len, C], có thể lấy slice hoặc reshape lại
+        y = y[:, -self.pred_len:]  # [B, pred_len]
 
         # Linear Stream
         t = self.fc5(t)
@@ -81,5 +74,8 @@ class Network(nn.Module):
         t = self.fc8(t)
         t = torch.reshape(t, (B, C, self.pred_len))
         t = t.permute(0,2,1) # [Batch, pred_len, Channel]
+
+        # Nếu y cần shape [B, pred_len, C], expand chiều cuối
+        y = y.unsqueeze(-1).expand(-1, self.pred_len, C)  # [B, pred_len, C]
 
         return t + y
