@@ -58,7 +58,7 @@ class Network(nn.Module):
         self.fc7 = nn.Linear(pred_len * 2, pred_len)
         self.fc8 = nn.Linear(pred_len, pred_len)
 
-    def forward(self, s, t):
+    def forward(self, s, t, seq_x_mark):
         # s: [Batch, Input, Channel]
         # t: [Batch, Input, Channel]
         s = s.permute(0,2,1) # [Batch, Channel, Input]
