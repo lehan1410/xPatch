@@ -12,28 +12,12 @@ import os
 import time
 import warnings
 import math
-import psutil
-# from ptflops import get_model_complexity_info
 
 warnings.filterwarnings('ignore')
-
-
-def test_model_size(model, filename='temp_model.pt'):
-    torch.save(model.state_dict(), filename)
-    size_mb = os.path.getsize(filename) / (1024 ** 2)
-    print(f"[MODEL SIZE] Model file size: {size_mb:.2f} MB")
-    os.remove(filename)
-
-def test_params_memory(model, input_shape):
-    # Tính số lượng tham số
-    total_params = sum(p.numel() for p in model.parameters())
-    print(f"[PARAMS] Total parameters: {total_params:,}")
 
 class Exp_Main(Exp_Basic):
     def __init__(self, args):
         super(Exp_Main, self).__init__(args)
-
-
 
     def _build_model(self):
         model_dict = {
@@ -65,43 +49,22 @@ class Exp_Main(Exp_Basic):
         mae_criterion = nn.L1Loss()
         return mse_criterion, mae_criterion
 
-    # def test_params_flop(model,x_shape):
-    #     """
-    #     If you want to thest former's flop, you need to give default value to inputs in model.forward(), the following code can only pass one argument to forward()
-    #     """
-    #     # model_params = 0
-    #     # for parameter in model.parameters():
-    #     #     model_params += parameter.numel()
-    #     #     print('INFO: Trainable parameter count: {:.2f}M'.format(model_params / 1000000.0))
-    #     # from ptflops import get_model_complexity_info
-    #     # with torch.cuda.device(0):
-    #     #     macs, params = get_model_complexity_info(model.cuda(), x_shape, as_strings=True, print_per_layer_stat=True)
-    #     #     # print('Flops:' + flops)
-    #     #     # print('Params:' + params)
-    #     #     print('{:<30}  {:<8}'.format('Computational complexity: ', macs))
-    #     #     print('{:<30}  {:<8}'.format('Number of parameters: ', params))
-    #     with torch.cuda.device(0):
-    #         macs, params = get_model_complexity_info(model.cuda(), x_shape, as_strings=True, print_per_layer_stat=False)
-    #         print('{:<30}  {:<8}'.format('Computational complexity: ', macs))
-    #         print('{:<30}  {:<8}'.format('Number of parameters: ', params))
-
     def vali(self, vali_data, vali_loader, criterion, is_test = True):
         total_loss = []
         self.model.eval()
         with torch.no_grad():
-            for i, (batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle) in enumerate(vali_loader):
+            for i, (batch_x, batch_y, batch_x_mark, batch_y_mark) in enumerate(vali_loader):
                 batch_x = batch_x.float().to(self.device)
                 batch_y = batch_y.float()
 
                 batch_x_mark = batch_x_mark.float().to(self.device)
                 batch_y_mark = batch_y_mark.float().to(self.device)
-                batch_cycle = batch_cycle.int().to(self.device)
 
                 # decoder input
                 dec_inp = torch.zeros_like(batch_y[:, -self.args.pred_len:, :]).float()
                 dec_inp = torch.cat([batch_y[:, :self.args.label_len, :], dec_inp], dim=1).float().to(self.device)
                 # encoder - decoder
-                outputs = self.model(batch_x, batch_cycle)
+                outputs = self.model(batch_x)
                 f_dim = -1 if self.args.features == 'MS' else 0
                 outputs = outputs[:, -self.args.pred_len:, f_dim:]
                 batch_y = batch_y[:, -self.args.pred_len:, f_dim:].to(self.device)
@@ -148,7 +111,6 @@ class Exp_Main(Exp_Basic):
         model_optim = self._select_optimizer()
         # criterion = self._select_criterion() # For MSE criterion
         mse_criterion, mae_criterion = self._select_criterion()
-        epoch_times = []
 
         # # CARD's cosine learning rate decay with warmup
         # self.warmup_epochs = self.args.warmup_epochs
@@ -178,7 +140,7 @@ class Exp_Main(Exp_Basic):
 
             self.model.train()
             epoch_time = time.time()
-            for i, (batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle) in enumerate(train_loader):
+            for i, (batch_x, batch_y, batch_x_mark, batch_y_mark) in enumerate(train_loader):
                 iter_count += 1
                 model_optim.zero_grad()
                 batch_x = batch_x.float().to(self.device)
@@ -186,7 +148,6 @@ class Exp_Main(Exp_Basic):
                 batch_y = batch_y.float().to(self.device)
                 batch_x_mark = batch_x_mark.float().to(self.device)
                 batch_y_mark = batch_y_mark.float().to(self.device)
-                batch_cycle = batch_cycle.int().to(self.device)
 
                 # decoder input
                 dec_inp = torch.zeros_like(batch_y[:, -self.args.pred_len:, :]).float()
@@ -194,7 +155,7 @@ class Exp_Main(Exp_Basic):
 
                 # encoder - decoder
                 # temp = time.time() # For computational cost analysis
-                outputs = self.model(batch_x, batch_cycle)
+                outputs = self.model(batch_x)
                 # train_time += time.time() - temp # For computational cost analysis
                 f_dim = -1 if self.args.features == 'MS' else 0
                 outputs = outputs[:, -self.args.pred_len:, f_dim:]
@@ -204,20 +165,13 @@ class Exp_Main(Exp_Basic):
                 # self.ratio = np.array([max(1/np.sqrt(i+1),0.0) for i in range(self.args.pred_len)])
 
                 # Arctangent loss with weight decay
-                # self.ratio = np.array([-1 * math.atan(i+1) + math.pi/4 + 1 for i in range(self.args.pred_len)])
-                alpha = 0.02  # Điều chỉnh tốc độ giảm
-                beta = 0.8    # Trọng số tối thiểu
-                self.ratio = np.array([
-                    beta + (1 - beta) * np.exp(-alpha * i) 
-                    for i in range(self.args.pred_len)
-                ])
+                self.ratio = np.array([-1 * math.atan(i+1) + math.pi/4 + 1 for i in range(self.args.pred_len)])
                 self.ratio = torch.tensor(self.ratio).unsqueeze(-1).to('cuda')
 
                 outputs = outputs * self.ratio
                 batch_y = batch_y * self.ratio
 
                 loss = mae_criterion(outputs, batch_y)
-                # loss = 0.5 * mse_criterion(outputs, batch_y) + 0.5 * mae_criterion(outputs, batch_y)
 
                 # loss = criterion(outputs, batch_y) # For MSE criterion
 
@@ -234,21 +188,11 @@ class Exp_Main(Exp_Basic):
                 loss.backward()
                 model_optim.step()
 
-            if torch.cuda.is_available():
-                torch.cuda.synchronize()
-                mem = torch.cuda.max_memory_allocated(device=self.device) / (1024 ** 2)
-                print(f"[TRAIN MEMORY] Max memory allocated in epoch {epoch+1}: {mem:.2f} MB")
-                torch.cuda.reset_peak_memory_stats(device=self.device)
-            else:
-                print("[TRAIN MEMORY] CUDA not available, cannot measure GPU memory.")
-                
             # train_times.append(train_time/len(train_loader)) # For computational cost analysis
-            epoch_duration = time.time() - epoch_time
-            epoch_times.append(epoch_duration)  
             print("Epoch: {} cost time: {}".format(epoch + 1, time.time() - epoch_time))
             train_loss = np.average(train_loss)
             # vali_loss = self.vali(vali_data, vali_loader, criterion) # For MSE criterion
-            # test_loss = self.vali(test_data, test_loader, critericoston) # For MSE criterion
+            # test_loss = self.vali(test_data, test_loader, criterion) # For MSE criterion
             vali_loss = self.vali(vali_data, vali_loader, mae_criterion, is_test=False)
             test_loss = self.vali(test_data, test_loader, mse_criterion)
 
@@ -267,9 +211,6 @@ class Exp_Main(Exp_Basic):
             # print('Beta:', self.model.decomp.ma.beta)   # Print the learned beta
 
         # print("Training time: {}".format(np.sum(train_times)/len(train_times))) # For computational cost analysis
-        avg_epoch_time = np.mean(epoch_times)
-        print(f"Average epoch time: {avg_epoch_time:.2f} seconds")
-
         best_model_path = path + '/' + 'checkpoint.pth'
         self.model.load_state_dict(torch.load(best_model_path))
         os.remove(best_model_path)
@@ -292,20 +233,19 @@ class Exp_Main(Exp_Basic):
         # test_time = 0 # For computational cost analysis
         self.model.eval()
         with torch.no_grad():
-            for i, (batch_x, batch_y, batch_x_mark, batch_y_mark, batch_cycle) in enumerate(test_loader):
+            for i, (batch_x, batch_y, batch_x_mark, batch_y_mark) in enumerate(test_loader):
                 batch_x = batch_x.float().to(self.device)
                 batch_y = batch_y.float().to(self.device)
 
                 batch_x_mark = batch_x_mark.float().to(self.device)
                 batch_y_mark = batch_y_mark.float().to(self.device)
-                batch_cycle = batch_cycle.int().to(self.device)
 
                 # decoder input
                 dec_inp = torch.zeros_like(batch_y[:, -self.args.pred_len:, :]).float()
                 dec_inp = torch.cat([batch_y[:, :self.args.label_len, :], dec_inp], dim=1).float().to(self.device)
                 # encoder - decoder
                 # temp = time.time() # For computational cost analysis
-                outputs = self.model(batch_x, batch_cycle)
+                outputs = self.model(batch_x)
                 # test_time += time.time() - temp # For computational cost analysis
 
                 f_dim = -1 if self.args.features == 'MS' else 0
@@ -325,12 +265,6 @@ class Exp_Main(Exp_Basic):
                     gt = np.concatenate((input[0, :, -1], true[0, :, -1]), axis=0)
                     pd = np.concatenate((input[0, :, -1], pred[0, :, -1]), axis=0)
                     visual(gt, pd, os.path.join(folder_path, str(i) + '.pdf'))
-
-        print("\n--- Model Statistics ---")
-        test_model_size(self.model)
-        test_params_memory(self.model, (batch_x.shape[1], batch_x.shape[2]))
-        # if test==1:
-        #     self.test_params_flop(self.model, (batch_x.shape[1],batch_x.shape[2]))
             
         # print("Inference time: {}".format(test_time/len(test_loader))) # For computational cost analysis
         preds = np.array(preds)
