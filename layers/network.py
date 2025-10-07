@@ -14,15 +14,11 @@ class Network(nn.Module):
         self.seg_num_x = self.seq_len // self.period_len
         self.seg_num_y = self.pred_len // self.period_len
 
-        self.conv1d = nn.Conv1d(
-            in_channels=self.enc_in, out_channels=self.enc_in,
-            kernel_size=1 + 2 * (self.period_len // 2),
-            stride=1, padding=self.period_len // 2,
-            padding_mode="zeros", bias=False, groups=self.enc_in
+        # Dùng Conv1d để tổng hợp đặc trưng thời gian cho từng subsequence
+        self.time_encoder_conv = nn.Conv1d(
+            in_channels=time_feat_dim, out_channels=self.period_len,
+            kernel_size=1, stride=1
         )
-
-        # Encode time features cho từng subsequence
-        self.time_encoder = nn.Linear(time_feat_dim, self.period_len)
 
         # Attention giữa các subsequence
         self.attn_subseq = nn.MultiheadAttention(embed_dim=self.period_len, num_heads=2, batch_first=True)
@@ -52,23 +48,21 @@ class Network(nn.Module):
         I = s.shape[2]
         t = torch.reshape(t, (B*C, I))
 
-        # Conv1d
-        s_conv = self.conv1d(s)  # [B, C, seq_len]
-        s = s_conv + s           # [B, C, seq_len]
-
         # Chia thành các subsequence
         s_subseq = s.reshape(-1, self.seg_num_x, self.period_len)  # [B*C, seg_num_x, period_len]
 
         # Chia time features thành subsequence
         time_subseq = seq_x_mark.unsqueeze(1).repeat(1, C, 1, 1)  # [B, C, seq_len, time_feat_dim]
         time_subseq = time_subseq.reshape(-1, self.seg_num_x, self.period_len, seq_x_mark.shape[-1])  # [B*C, seg_num_x, period_len, time_feat_dim]
-        # Lấy trung bình đặc trưng thời gian cho mỗi subsequence
-        time_emb = time_subseq.mean(dim=2)  # [B*C, seg_num_x, time_feat_dim]
-        # Encode thành embedding cùng chiều với period_len
-        query = self.time_encoder(time_emb)  # [B*C, seg_num_x, period_len]
+        # Dùng Conv1d để tổng hợp đặc trưng thời gian cho mỗi subsequence
+        time_subseq_reshape = time_subseq.permute(0, 1, 3, 2)  # [B*C, seg_num_x, time_feat_dim, period_len]
+        time_emb = self.time_encoder_conv(
+            time_subseq_reshape.reshape(-1, time_subseq_reshape.shape[2], self.period_len)
+        )  # [B*C*seg_num_x, period_len]
+        time_emb = time_emb.reshape(B*C, self.seg_num_x, self.period_len)  # [B*C, seg_num_x, period_len]
 
         # Attention giữa các subsequence, dùng time embedding làm query
-        s_subseq_attn, _ = self.attn_subseq(query, s_subseq, s_subseq)  # [B*C, seg_num_x, period_len]
+        s_subseq_attn, _ = self.attn_subseq(time_emb, s_subseq, s_subseq)  # [B*C, seg_num_x, period_len]
 
         s = s_subseq_attn
 
