@@ -59,8 +59,7 @@ class Network(nn.Module):
         time_emb = self.time_encoder_conv(
             time_subseq_reshape.reshape(-1, time_subseq_reshape.shape[2], self.period_len)
         )  # [B*C*seg_num_x, period_len]
-        time_emb = time_emb.view(B, C, self.seg_num_x, self.period_len)
-        time_emb = time_emb.reshape(-1, self.seg_num_x, self.period_len)
+        time_emb = time_emb.view(-1, self.seg_num_x, self.period_len)
         # Attention giữa các subsequence, dùng time embedding làm query
         s_subseq_attn, _ = self.attn_subseq(time_emb, s_subseq, s_subseq)  # [B*C, seg_num_x, period_len]
 
