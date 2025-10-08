@@ -2,11 +2,11 @@ import torch
 from torch import nn
 
 class channel_attn_block(nn.Module):
-    def __init__(self,enc_in,d_model,dropout):
+    def __init__(self, enc_in, d_model, dropout):
         super(channel_attn_block, self).__init__()
-        self.channel_att_norm=nn.BatchNorm1d(enc_in)
-        self.fft_norm=nn.LayerNorm(d_model)
-        self.channel_attn=nn.MultiheadAttention(d_model, num_heads=1, batch_first=True)
+        self.channel_att_norm = nn.BatchNorm1d(d_model)
+        self.fft_norm = nn.LayerNorm(d_model)
+        self.channel_attn = nn.MultiheadAttention(d_model, num_heads=1, batch_first=True)
         self.fft_layer = nn.Sequential(
             nn.Linear(d_model, int(d_model*2)),
             nn.GELU(),
