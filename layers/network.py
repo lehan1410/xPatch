@@ -22,11 +22,11 @@ class Network(nn.Module):
         )
 
         # Attention cho từng subsequence (channel nhìn lẫn nhau)
-        self.subseq_attn = nn.MultiheadAttention(self.enc_in, num_heads=1, batch_first=True)
+        self.subseq_attn = nn.MultiheadAttention(self.enc_in, num_heads=3, batch_first=True)
         # Temporal Self-Attention (theo chiều thời gian trong subsequence)
         self.temporal_attn = nn.MultiheadAttention(self.period_len, num_heads=4, batch_first=True)
         # Global Attention Layer (toàn bộ chuỗi sau khi tổng hợp)
-        self.global_attn = nn.MultiheadAttention(self.enc_in, num_heads=1, batch_first=True)
+        self.global_attn = nn.MultiheadAttention(self.enc_in, num_heads=3, batch_first=True)
 
         self.mlp = nn.Sequential(
             nn.Linear(self.seg_num_x, self.d_model * 2),
