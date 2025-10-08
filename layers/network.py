@@ -7,7 +7,7 @@ class channel_attn_block(nn.Module):
         super(channel_attn_block, self).__init__()
         self.channel_att_norm = nn.BatchNorm1d(enc_in)
         self.fft_norm = nn.LayerNorm(d_model)
-        self.channel_attn = nn.MultiheadAttention(d_model, num_heads=4, batch_first=True)
+        self.channel_attn = nn.MultiheadAttention(d_model, num_heads=1, batch_first=True)
         self.fft_layer = nn.Sequential(
             nn.Linear(d_model, d_model * 2),
             nn.GELU(),
