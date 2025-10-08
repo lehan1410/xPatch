@@ -4,9 +4,9 @@ from torch import nn
 class channel_attn_block(nn.Module):
     def __init__(self, enc_in, d_model, dropout):
         super(channel_attn_block, self).__init__()
-        self.channel_att_norm = nn.BatchNorm1d(d_model)
+        self.channel_att_norm = nn.BatchNorm1d(enc_in)
         self.fft_norm = nn.LayerNorm(d_model)
-        self.channel_attn = nn.MultiheadAttention(d_model, num_heads=1, batch_first=True)
+        self.channel_attn = nn.MultiheadAttention(enc_in, num_heads=1, batch_first=True)
         self.fft_layer = nn.Sequential(
             nn.Linear(d_model, d_model * 2),
             nn.GELU(),
@@ -14,13 +14,20 @@ class channel_attn_block(nn.Module):
             nn.Linear(d_model * 2, d_model),
         )
 
-    def forward(self, x):
-        # x: [B, seq_len, d_model]
-        x_perm = x.permute(0, 2, 1)  # [B, d_model, seq_len]
-        attn_out, _ = self.channel_attn(x_perm.transpose(1,2), x_perm.transpose(1,2), x_perm.transpose(1,2))  # [B, seq_len, d_model]
-        attn_out = attn_out.transpose(1,2)  # [B, d_model, seq_len]
-        res_2 = self.channel_att_norm(attn_out + x_perm)  # [B, d_model, seq_len]
-        res_2 = res_2.transpose(1,2)  # [B, seq_len, d_model]
+    def forward(self, residual):
+        # residual: [B, seq_len, d_model]
+        # Đổi sang [B, d_model, seq_len] để lấy từng channel tại mỗi thời điểm
+        x = residual.permute(0, 2, 1)  # [B, d_model, seq_len]
+        # Attention trên channel: mỗi channel là một token
+        x = x.transpose(1, 2)  # [B, seq_len, d_model] → [B, seq_len, d_model]
+        # Đổi sang [B, seq_len, enc_in] để attention trên channel
+        x_channel = residual.permute(0, 1, 2)  # [B, seq_len, d_model] (giữ nguyên)
+        attn_out, _ = self.channel_attn(x_channel, x_channel, x_channel)  # [B, seq_len, enc_in]
+        # Chuẩn hóa trên channel
+        attn_out = attn_out.permute(0, 2, 1)  # [B, enc_in, seq_len]
+        res_2 = self.channel_att_norm(attn_out)  # [B, enc_in, seq_len]
+        res_2 = res_2.permute(0, 2, 1)  # [B, seq_len, enc_in]
+        # Đưa về d_model bằng Linear nếu cần (ở đây giữ nguyên d_model)
         res_2 = self.fft_norm(self.fft_layer(res_2) + res_2)
         return res_2
 
