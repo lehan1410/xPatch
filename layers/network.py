@@ -1,7 +1,6 @@
 import torch
 from torch import nn
 
-
 class channel_attn_block(nn.Module):
     def __init__(self, enc_in, d_model, dropout):
         super(channel_attn_block, self).__init__()
@@ -17,10 +16,16 @@ class channel_attn_block(nn.Module):
 
     def forward(self, x):
         # x: [B, seq_len, d_model]
-        attn_out, _ = self.channel_attn(x, x, x)
-        res_2 = self.channel_att_norm(attn_out + x)
+        # Đổi sang [B, d_model, seq_len] để attention trên channel
+        x_perm = x.permute(0, 2, 1)  # [B, d_model, seq_len]
+        # Attention trên channel: mỗi chuỗi là một token
+        attn_out, _ = self.channel_attn(x_perm.transpose(1,2), x_perm.transpose(1,2), x_perm.transpose(1,2))  # [B, seq_len, d_model]
+        attn_out = attn_out.transpose(1,2)  # [B, d_model, seq_len]
+        res_2 = self.channel_att_norm(attn_out + x_perm)  # [B, d_model, seq_len]
+        res_2 = res_2.transpose(1,2)  # [B, seq_len, d_model]
         res_2 = self.fft_norm(self.fft_layer(res_2) + res_2)
         return res_2
+
 class Network(nn.Module):
     def __init__(self, seq_len, pred_len, c_in, period_len, d_model, dropout=0.1, n_layers=2):
         super(Network, self).__init__()
@@ -57,7 +62,7 @@ class Network(nn.Module):
         B, I, C = s.shape
         s_proj = self.channel_proj(s)  # [B, Input, d_model]
 
-        # Multi-layer Channel Attention
+        # Multi-layer Channel Attention (trên channel)
         for i in range(self.n_layers):
             s_proj = self.channel_attn_blocks[i](s_proj)  # [B, Input, d_model]
 
@@ -78,4 +83,3 @@ class Network(nn.Module):
         t = t.permute(0,2,1) # [B, pred_len, C]
 
         return t + y
-
