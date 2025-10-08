@@ -3,9 +3,9 @@ from torch import nn
 
 
 class channel_attn_block(nn.Module):
-    def __init__(self, seq_len, d_model, dropout):
+    def __init__(self, enc_in, d_model, dropout):
         super(channel_attn_block, self).__init__()
-        self.channel_att_norm = nn.BatchNorm1d(seq_len)
+        self.channel_att_norm = nn.BatchNorm1d(enc_in)
         self.fft_norm = nn.LayerNorm(d_model)
         self.channel_attn = nn.MultiheadAttention(d_model, num_heads=4, batch_first=True)
         self.fft_layer = nn.Sequential(
@@ -32,7 +32,7 @@ class Network(nn.Module):
 
         self.channel_proj = nn.Linear(self.enc_in, self.d_model)
         self.channel_attn_blocks = nn.ModuleList([
-            channel_attn_block(self.seq_len, self.d_model, dropout)
+            channel_attn_block(self.enc_in, self.d_model, dropout)
             for _ in range(self.n_layers)
         ])
 
