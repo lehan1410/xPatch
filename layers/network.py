@@ -14,11 +14,9 @@ class channel_attn_block(nn.Module):
             nn.Linear(int(d_model*2), d_model),
         )
     def forward(self, residual):
-        # [B, Channel, d_model] → [B, d_model, Channel]
-        x = residual.permute(0, 2, 1)
-        attn_out, _ = self.channel_attn(x, x, x)  # [B, d_model, Channel]
-        attn_out = attn_out.permute(0, 2, 1)      # [B, Channel, d_model]
-        res_2 = self.channel_att_norm(attn_out)
+        # residual: [B, Channel, d_model]
+        attn_out, _ = self.channel_attn(residual, residual, residual)  # [B, Channel, d_model]
+        res_2 = self.channel_att_norm(attn_out.transpose(1, 2)).transpose(1, 2)
         res_2 = self.fft_norm(self.fft_layer(res_2) + res_2)
         return res_2
 
