@@ -31,7 +31,7 @@ class Network(nn.Module):
         self.d_model = d_model
 
         self.channel_proj = nn.Linear(self.enc_in, self.d_model)
-        self.channel_attn = channel_attn_block(self.seq_len, self.d_model, dropout)
+        self.channel_attn = channel_attn_block(self.enc_in, self.d_model, dropout)
 
         self.mlp = nn.Sequential(
             nn.Linear(self.seq_len, self.d_model * 2),
