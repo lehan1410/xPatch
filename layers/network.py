@@ -14,20 +14,15 @@ class channel_attn_block(nn.Module):
             nn.Linear(d_model * 2, d_model),
         )
 
-    def forward(self, residual):
-        # residual: [B, seq_len, d_model]
-        # Đổi sang [B, d_model, seq_len] để lấy từng channel tại mỗi thời điểm
-        x = residual.permute(0, 2, 1)  # [B, d_model, seq_len]
+    def forward(self, x):
+        # x: [B, seq_len, d_model]
+        # Đổi sang [B, C, d_model] để attention trên channel
+        x_channel = x.transpose(1, 2)  # [B, d_model, seq_len] → [B, d_model, seq_len]
+        x_channel = x_channel.permute(0, 2, 1)  # [B, seq_len, d_model] → [B, d_model, seq_len]
         # Attention trên channel: mỗi channel là một token
-        x = x.transpose(1, 2)  # [B, seq_len, d_model] → [B, seq_len, d_model]
-        # Đổi sang [B, seq_len, enc_in] để attention trên channel
-        x_channel = residual.permute(0, 1, 2)  # [B, seq_len, d_model] (giữ nguyên)
-        attn_out, _ = self.channel_attn(x_channel, x_channel, x_channel)  # [B, seq_len, enc_in]
-        # Chuẩn hóa trên channel
-        attn_out = attn_out.permute(0, 2, 1)  # [B, enc_in, seq_len]
-        res_2 = self.channel_att_norm(attn_out)  # [B, enc_in, seq_len]
-        res_2 = res_2.permute(0, 2, 1)  # [B, seq_len, enc_in]
-        # Đưa về d_model bằng Linear nếu cần (ở đây giữ nguyên d_model)
+        attn_out, _ = self.channel_attn(x_channel, x_channel, x_channel)  # [B, d_model, seq_len]
+        res_2 = self.channel_att_norm(attn_out)  # [B, d_model, seq_len]
+        res_2 = res_2.permute(0, 2, 1)  # [B, seq_len, d_model]
         res_2 = self.fft_norm(self.fft_layer(res_2) + res_2)
         return res_2
 
