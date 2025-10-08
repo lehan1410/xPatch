@@ -1,8 +1,28 @@
 import torch
 from torch import nn
 
+class channel_attn_block(nn.Module):
+    def __init__(self, enc_in, d_model, dropout):
+        super(channel_attn_block, self).__init__()
+        self.channel_att_norm = nn.BatchNorm1d(enc_in)
+        self.fft_norm = nn.LayerNorm(d_model)
+        self.channel_attn = nn.MultiheadAttention(d_model, num_heads=1, batch_first=True)
+        self.fft_layer = nn.Sequential(
+            nn.Linear(d_model, d_model * 2),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(d_model * 2, d_model),
+        )
+
+    def forward(self, x):
+        # x: [B, seq_len, d_model]
+        attn_out, _ = self.channel_attn(x, x, x)
+        res_2 = self.channel_att_norm(attn_out + x)
+        res_2 = self.fft_norm(self.fft_layer(res_2) + res_2)
+        return res_2
+
 class Network(nn.Module):
-    def __init__(self, seq_len, pred_len, c_in, period_len, d_model):
+    def __init__(self, seq_len, pred_len, c_in, period_len, d_model, dropout=0.1):
         super(Network, self).__init__()
 
         self.pred_len = pred_len
@@ -15,10 +35,10 @@ class Network(nn.Module):
         self.seg_num_y = self.pred_len // self.period_len
 
         self.conv1d = nn.Conv1d(
-            in_channels=self.enc_in, out_channels=self.enc_in,
+            in_channels=self.enc_in, out_channels=self.d_model,
             kernel_size=1 + 2 * (self.period_len // 2),
             stride=1, padding=self.period_len // 2,
-            padding_mode="zeros", bias=False, groups=self.enc_in
+            padding_mode="zeros", bias=False, groups=1
         )
 
         self.pool = nn.AvgPool1d(
@@ -27,14 +47,16 @@ class Network(nn.Module):
             padding=self.period_len // 2
         )
 
-        # Attention cho toàn bộ seasonal (channel nhìn lẫn nhau)
-        self.channel_attn = nn.MultiheadAttention(self.enc_in, num_heads=1, batch_first=True)
+        self.channel_attn = channel_attn_block(self.seq_len, self.d_model, dropout)
 
         self.mlp = nn.Sequential(
             nn.Linear(self.seg_num_x, self.d_model * 2),
             nn.GELU(),
             nn.Linear(self.d_model * 2, self.seg_num_y)
         )
+
+        # Chuyển từ d_model về enc_in (C)
+        self.out_proj = nn.Linear(self.d_model, self.enc_in)
 
         # Linear Stream
         self.fc5 = nn.Linear(seq_len, pred_len * 2)
@@ -49,30 +71,25 @@ class Network(nn.Module):
         s = s.permute(0,2,1) # [Batch, Channel, Input]
         t = t.permute(0,2,1) # [Batch, Channel, Input]
 
-        B, C, I = s.shape
+        B = s.shape[0]
+        C = s.shape[1]
+        I = s.shape[2]
         t = torch.reshape(t, (B*C, I))
 
-        # Seasonal Stream: Conv1d
-        s_conv = self.conv1d(s)  # [B, C, seq_len]
-        s_conv = self.pool(s_conv)  # [B, C, seq_len]
-        s_seasonal = s_conv + s  # residual
+        # Seasonal Stream: Conv1d + Pooling + Channel Attention
+        s_conv = self.conv1d(s)  # [B, d_model, seq_len]
+        s_pool = self.pool(s_conv)  # [B, d_model, seq_len]
+        s_pool = s_pool.permute(0,2,1)  # [B, seq_len, d_model]
+        s_attn = self.channel_attn(s_pool)  # [B, seq_len, d_model]
+        s = s_attn.permute(0,2,1)  # [B, d_model, seq_len]
 
-        # Attention giữa các channel cho toàn bộ seasonal
-        # s_seasonal: [B, C, seq_len] -> [B, seq_len, C] để dùng attention
-        s_seasonal_attn_in = s_seasonal.permute(0,2,1)  # [B, seq_len, C]
-        attn_channel_out, _ = self.channel_attn(s_seasonal_attn_in, s_seasonal_attn_in, s_seasonal_attn_in)  # [B, seq_len, C]
-        # Cộng với thông tin ban đầu (residual)
-        s_seasonal_out = attn_channel_out + s_seasonal_attn_in  # [B, seq_len, C]
-
-        # Đưa vào dự đoán
-        s = s_seasonal_out.permute(0,2,1)  # [B, C, seq_len]
-        s = s.reshape(B*C, self.seg_num_x, self.period_len)  # [B*C, seg_num_x, period_len]
-        s = s.permute(0, 2, 1)  # [B*C, period_len, seg_num_x]
-        s = s.reshape(-1, self.seg_num_x)
+        s = s.reshape(B*self.d_model, self.seg_num_x, self.period_len).permute(0, 2, 1)
         y = self.mlp(s)
-        y = y.reshape(B, C, self.period_len, self.seg_num_y)  # [B, C, period_len, seg_num_y]
-        y = y.permute(0, 2, 1, 3).reshape(B, self.enc_in, self.pred_len)
-        y = y.permute(0, 2, 1)  # [B, pred_len, enc_in]
+        y = y.permute(0, 2, 1).reshape(B, self.d_model, self.pred_len)
+        y = y.permute(0, 2, 1)  # [B, pred_len, d_model]
+
+        # Chuyển về đúng số channel [B, pred_len, C]
+        y = self.out_proj(y)  # [B, pred_len, C]
 
         # Linear Stream
         t = self.fc5(t)
@@ -81,6 +98,6 @@ class Network(nn.Module):
         t = self.fc7(t)
         t = self.fc8(t)
         t = torch.reshape(t, (B, C, self.pred_len))
-        t = t.permute(0,2,1) # [Batch, Output, Channel] = [B, pred_len, C]
+        t = t.permute(0,2,1) # [Batch, pred_len, Channel] = [B, pred_len, C]
 
         return t + y
