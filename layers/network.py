@@ -22,16 +22,20 @@ class channel_attn_block(nn.Module):
         return res_2
 
 class Network(nn.Module):
-    def __init__(self, seq_len, pred_len, c_in, d_model, dropout=0.1):
+    def __init__(self, seq_len, pred_len, c_in, d_model, dropout=0.1, n_layers=2):
         super(Network, self).__init__()
 
         self.pred_len = pred_len
         self.seq_len = seq_len
         self.enc_in  = c_in
         self.d_model = d_model
+        self.n_layers = n_layers
 
         self.channel_proj = nn.Linear(self.enc_in, self.d_model)
-        self.channel_attn = channel_attn_block(self.enc_in, self.d_model, dropout)
+        self.channel_attn_blocks = nn.ModuleList([
+            channel_attn_block(self.seq_len, self.d_model, dropout)
+            for _ in range(self.n_layers)
+        ])
 
         self.mlp = nn.Sequential(
             nn.Linear(self.seq_len, self.d_model * 2),
@@ -54,11 +58,12 @@ class Network(nn.Module):
         B, I, C = s.shape
         s_proj = self.channel_proj(s)  # [B, Input, d_model]
 
-        # Channel Attention
-        s_attn = self.channel_attn(s_proj)  # [B, Input, d_model]
+        # Multi-layer Channel Attention
+        for i in range(self.n_layers):
+            s_proj = self.channel_attn_blocks[i](s_proj)  # [B, Input, d_model]
 
         # MLP dự báo
-        y = self.mlp(s_attn.transpose(1,2))  # [B, d_model, pred_len]
+        y = self.mlp(s_proj.transpose(1,2))  # [B, d_model, pred_len]
         y = y.transpose(1,2)  # [B, pred_len, d_model]
         y = self.out_proj(y)  # [B, pred_len, C]
 
