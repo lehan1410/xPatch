@@ -62,8 +62,12 @@ class Network(nn.Module):
         attn_out = attn_out.reshape(B, self.seg_num_x, self.period_len, C).permute(0,3,1,2)  # [B, C, seg_num_x, period_len]
         s = attn_out.reshape(B*C, self.seg_num_x, self.period_len)  # [B*C, seg_num_x, period_len]
 
+        
+        s = s.permute(0, 2, 1)  # [B*C, period_len, seg_num_x]
+        s = s.reshape(-1, self.seg_num_x)
         y = self.mlp(s)
-        y = y.permute(0, 2, 1).reshape(B, self.enc_in, self.pred_len)
+        y = y.reshape(B, C, self.period_len, self.seg_num_y)  # [B, C, period_len, seg_num_y]
+        y = y.permute(0, 2, 1, 3).reshape(B, self.enc_in, self.pred_len) 
         y = y.permute(0, 2, 1)
 
         # Linear Stream
