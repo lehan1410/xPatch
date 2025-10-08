@@ -40,12 +40,15 @@ class Network(nn.Module):
         # Multiscale Attention Stream
         attn_outputs = []
         for scale in range(self.num_scales):
-            # Downsample input for each scale
             factor = 2 ** scale
             s_ds = s[:, :, ::factor]  # [B, C, I//factor]
             time_ds = seq_x_mark[:, ::factor, :]  # [B, I//factor, period_len]
             s_proj = self.attn_proj(s_ds.permute(0,2,1))  # [B, I//factor, d_model]
-            time_emb = self.time_proj(time_ds)            # [B, I//factor, d_model]
+            # Reshape time_ds for Linear
+            B_ds, I_ds, P = time_ds.shape
+            time_ds_reshape = time_ds.reshape(-1, P)  # [B*I//factor, period_len]
+            time_emb = self.time_proj(time_ds_reshape) # [B*I//factor, d_model]
+            time_emb = time_emb.reshape(B_ds, I_ds, self.d_model) # [B, I//factor, d_model]
             attn_out, _ = self.attn_layers[scale](s_proj, time_emb, time_emb)
             attn_out = self.out_proj(attn_out)            # [B, I//factor, enc_in]
             # Upsample to pred_len
