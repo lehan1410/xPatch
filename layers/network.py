@@ -8,15 +8,19 @@ class channel_attn_block(nn.Module):
         self.fft_norm=nn.LayerNorm(d_model)
         self.channel_attn=nn.MultiheadAttention(d_model, num_heads=1, batch_first=True)
         self.fft_layer = nn.Sequential(
-                                nn.Linear(d_model, int(d_model*2)),
-                                nn.GELU(),
-                                nn.Dropout(dropout),
-                                nn.Linear(int(d_model*2), d_model),
-                                )
+            nn.Linear(d_model, int(d_model*2)),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(int(d_model*2), d_model),
+        )
     def forward(self, residual):
-        res_2=self.channel_att_norm(self.channel_attn(residual.permute(0,2,1))+residual.permute(0,2,1))
-        res_2=self.fft_norm(self.fft_layer(res_2)+res_2)
-        return res_2.permute(0,2,1)
+        # [B, Channel, d_model] → [B, d_model, Channel]
+        x = residual.permute(0, 2, 1)
+        attn_out, _ = self.channel_attn(x, x, x)  # [B, d_model, Channel]
+        attn_out = attn_out.permute(0, 2, 1)      # [B, Channel, d_model]
+        res_2 = self.channel_att_norm(attn_out)
+        res_2 = self.fft_norm(self.fft_layer(res_2) + res_2)
+        return res_2
 
 class Network(nn.Module):
     def __init__(self, seq_len, pred_len, c_in, period_len, d_model, dropout=0.1, n_layers=2):
