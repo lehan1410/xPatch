@@ -16,19 +16,13 @@ class channel_attn_block(nn.Module):
         )
 
     def forward(self, x):
-        # x: [B, seq_len, d_model]
-        # Đổi sang [B, enc_in, d_model] để mỗi channel là một token
-        x_channel = x.permute(0, 2, 1)  # [B, d_model, seq_len] → [B, enc_in, d_model] nếu d_model=enc_in
-        x_channel = x_channel.transpose(1, 2)  # [B, d_model, enc_in]
+        # x: [B, Channel, d_model]
         # Attention trên channel: mỗi channel là một token
-        attn_out, _ = self.channel_attn(x_channel, x_channel, x_channel)  # [B, d_model, enc_in]
-        attn_out = attn_out.transpose(1, 2)  # [B, enc_in, d_model]
-        res_2 = self.channel_att_norm(attn_out)  # [B, enc_in, d_model]
-        res_2 = res_2.transpose(1, 2)  # [B, d_model, enc_in]
-        res_2 = res_2.permute(0, 2, 1)  # [B, enc_in, d_model] → [B, enc_in, d_model]
-        # Đưa về [B, seq_len, d_model] nếu cần (giả sử seq_len = enc_in)
-        res_2 = self.fft_norm(self.fft_layer(res_2) + res_2)
-        res_2 = res_2.permute(0, 2, 1)  # [B, d_model, enc_in] → [B, enc_in, d_model]
+        # Đưa về [B, Channel, d_model] -> [B, Channel, d_model] (không cần permute)
+        attn_out, _ = self.channel_attn(x, x, x)  # [B, Channel, d_model]
+        # Chuẩn hóa trên channel (BatchNorm1d expects [B, C, d_model])
+        attn_out_bn = self.channel_att_norm(attn_out.transpose(1, 2)).transpose(1, 2)  # [B, Channel, d_model]
+        res_2 = self.fft_norm(self.fft_layer(attn_out_bn) + attn_out_bn)
         return res_2
 
 class Network(nn.Module):
@@ -76,7 +70,7 @@ class Network(nn.Module):
         # MLP dự báo
         y = self.mlp(s_proj)  # [B, Channel, pred_len]
         y = y.permute(0, 2, 1)  # [B, pred_len, Channel]
-        y = self.out_proj(y)    # [B, pred_len, Channel] (nếu muốn chuyển về đúng số channel)
+        y = self.out_proj(y)    # [B, pred_len, Channel]
 
         # Linear Stream
         t = t.permute(0,2,1) # [B, C, Input]
