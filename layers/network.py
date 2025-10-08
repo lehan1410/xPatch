@@ -22,7 +22,7 @@ class Network(nn.Module):
         )
 
         # Attention cho từng subsequence (channel nhìn lẫn nhau)
-        self.subseq_attn = nn.MultiheadAttention(self.enc_in, num_heads=2, batch_first=True)
+        self.subseq_attn = nn.MultiheadAttention(self.enc_in, num_heads=1, batch_first=True)
 
         self.mlp = nn.Sequential(
             nn.Linear(self.seg_num_x, self.d_model * 2),
