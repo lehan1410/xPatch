@@ -36,7 +36,7 @@ class Network(nn.Module):
         ])
 
         self.mlp = nn.Sequential(
-            nn.Linear(self.enc_in, self.d_model * 2),
+            nn.Linear(self.d_model, self.d_model * 2),
             nn.GELU(),
             nn.Linear(self.d_model * 2, self.pred_len)
         )
