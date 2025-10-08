@@ -21,6 +21,12 @@ class Network(nn.Module):
             padding_mode="zeros", bias=False, groups=self.enc_in
         )
 
+        self.pool = nn.AvgPool1d(
+            kernel_size=1 + 2 * (self.period_len // 2),
+            stride=1,
+            padding=self.period_len // 2
+        )
+
         # Attention cho toàn bộ seasonal (channel nhìn lẫn nhau)
         self.channel_attn = nn.MultiheadAttention(self.enc_in, num_heads=1, batch_first=True)
 
@@ -48,6 +54,7 @@ class Network(nn.Module):
 
         # Seasonal Stream: Conv1d
         s_conv = self.conv1d(s)  # [B, C, seq_len]
+        s_conv = self.pool(s_conv)  # [B, C, seq_len]
         s_seasonal = s_conv + s  # residual
 
         # Attention giữa các channel cho toàn bộ seasonal
