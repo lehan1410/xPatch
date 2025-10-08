@@ -2,28 +2,21 @@ import torch
 from torch import nn
 
 class channel_attn_block(nn.Module):
-    def __init__(self, enc_in, d_model, dropout):
+    def __init__(self,enc_in,d_model,dropout):
         super(channel_attn_block, self).__init__()
-        self.channel_att_norm = nn.BatchNorm1d(enc_in)
-        self.fft_norm = nn.LayerNorm(d_model)
-        # Attention trên channel: mỗi channel là một token, embedding là d_model
-        self.channel_attn = nn.MultiheadAttention(d_model, num_heads=1, batch_first=True)
+        self.channel_att_norm=nn.BatchNorm1d(enc_in)
+        self.fft_norm=nn.LayerNorm(d_model)
+        self.channel_attn=nn.MultiheadAttention(d_model=d_model, n_heads=1,proj_dropout=dropout)
         self.fft_layer = nn.Sequential(
-            nn.Linear(d_model, d_model * 2),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(d_model * 2, d_model),
-        )
-
-    def forward(self, x):
-        # x: [B, Channel, d_model]
-        # Attention trên channel: mỗi channel là một token
-        # Đưa về [B, Channel, d_model] -> [B, Channel, d_model] (không cần permute)
-        attn_out, _ = self.channel_attn(x, x, x)  # [B, Channel, d_model]
-        # Chuẩn hóa trên channel (BatchNorm1d expects [B, C, d_model])
-        attn_out_bn = self.channel_att_norm(attn_out.transpose(1, 2)).transpose(1, 2)  # [B, Channel, d_model]
-        res_2 = self.fft_norm(self.fft_layer(attn_out_bn) + attn_out_bn)
-        return res_2
+                                nn.Linear(d_model, int(d_model*2)),
+                                nn.GELU(),
+                                nn.Dropout(dropout),
+                                nn.Linear(int(d_model*2), d_model),
+                                )
+    def forward(self, residual):
+        res_2=self.channel_att_norm(self.channel_attn(residual.permute(0,2,1))+residual.permute(0,2,1))
+        res_2=self.fft_norm(self.fft_layer(res_2)+res_2)
+        return res_2.permute(0,2,1)
 
 class Network(nn.Module):
     def __init__(self, seq_len, pred_len, c_in, period_len, d_model, dropout=0.1, n_layers=2):
