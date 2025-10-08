@@ -6,6 +6,7 @@ class channel_attn_block(nn.Module):
         super(channel_attn_block, self).__init__()
         self.channel_att_norm = nn.BatchNorm1d(enc_in)
         self.fft_norm = nn.LayerNorm(d_model)
+        # Attention trên channel: mỗi channel là một token, embedding là d_model
         self.channel_attn = nn.MultiheadAttention(d_model, num_heads=1, batch_first=True)
         self.fft_layer = nn.Sequential(
             nn.Linear(d_model, d_model * 2),
@@ -16,14 +17,18 @@ class channel_attn_block(nn.Module):
 
     def forward(self, x):
         # x: [B, seq_len, d_model]
-        # Đổi sang [B, C, d_model] để attention trên channel
-        x_channel = x.transpose(1, 2)  # [B, d_model, seq_len] → [B, d_model, seq_len]
-        x_channel = x_channel.permute(0, 2, 1)  # [B, seq_len, d_model] → [B, d_model, seq_len]
+        # Đổi sang [B, enc_in, d_model] để mỗi channel là một token
+        x_channel = x.permute(0, 2, 1)  # [B, d_model, seq_len] → [B, enc_in, d_model] nếu d_model=enc_in
+        x_channel = x_channel.transpose(1, 2)  # [B, d_model, enc_in]
         # Attention trên channel: mỗi channel là một token
-        attn_out, _ = self.channel_attn(x_channel, x_channel, x_channel)  # [B, d_model, seq_len]
-        res_2 = self.channel_att_norm(attn_out)  # [B, d_model, seq_len]
-        res_2 = res_2.permute(0, 2, 1)  # [B, seq_len, d_model]
+        attn_out, _ = self.channel_attn(x_channel, x_channel, x_channel)  # [B, d_model, enc_in]
+        attn_out = attn_out.transpose(1, 2)  # [B, enc_in, d_model]
+        res_2 = self.channel_att_norm(attn_out)  # [B, enc_in, d_model]
+        res_2 = res_2.transpose(1, 2)  # [B, d_model, enc_in]
+        res_2 = res_2.permute(0, 2, 1)  # [B, enc_in, d_model] → [B, enc_in, d_model]
+        # Đưa về [B, seq_len, d_model] nếu cần (giả sử seq_len = enc_in)
         res_2 = self.fft_norm(self.fft_layer(res_2) + res_2)
+        res_2 = res_2.permute(0, 2, 1)  # [B, d_model, enc_in] → [B, enc_in, d_model]
         return res_2
 
 class Network(nn.Module):
@@ -35,14 +40,14 @@ class Network(nn.Module):
         self.d_model = d_model
         self.n_layers = n_layers
 
-        self.channel_proj = nn.Linear(self.enc_in, self.d_model)
+        self.channel_proj = nn.Linear(self.seq_len, self.d_model)
         self.channel_attn_blocks = nn.ModuleList([
             channel_attn_block(self.enc_in, self.d_model, dropout)
             for _ in range(self.n_layers)
         ])
 
         self.mlp = nn.Sequential(
-            nn.Linear(self.seq_len, self.d_model * 2),
+            nn.Linear(self.enc_in, self.d_model * 2),
             nn.GELU(),
             nn.Linear(self.d_model * 2, self.pred_len)
         )
@@ -60,16 +65,18 @@ class Network(nn.Module):
         # s: [Batch, Input, Channel]
         # t: [Batch, Input, Channel]
         B, I, C = s.shape
-        s_proj = self.channel_proj(s)  # [B, Input, d_model]
+        # Đổi sang [B, Channel, Input] để attention trên channel
+        s_proj = s.permute(0, 2, 1)  # [B, Channel, Input]
+        s_proj = self.channel_proj(s_proj)  # [B, Channel, d_model]
 
         # Multi-layer Channel Attention (trên channel)
         for i in range(self.n_layers):
-            s_proj = self.channel_attn_blocks[i](s_proj)  # [B, Input, d_model]
+            s_proj = self.channel_attn_blocks[i](s_proj)  # [B, Channel, d_model]
 
         # MLP dự báo
-        y = self.mlp(s_proj.transpose(1,2))  # [B, d_model, pred_len]
-        y = y.transpose(1,2)  # [B, pred_len, d_model]
-        y = self.out_proj(y)  # [B, pred_len, C]
+        y = self.mlp(s_proj)  # [B, Channel, pred_len]
+        y = y.permute(0, 2, 1)  # [B, pred_len, Channel]
+        y = self.out_proj(y)    # [B, pred_len, Channel] (nếu muốn chuyển về đúng số channel)
 
         # Linear Stream
         t = t.permute(0,2,1) # [B, C, Input]
