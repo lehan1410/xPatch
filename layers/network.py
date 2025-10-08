@@ -1,21 +1,6 @@
 import torch
 from torch import nn
 
-class TransformerAttention(nn.Module):
-    def __init__(self, d_model, nhead, num_layers):
-        super(TransformerAttention, self).__init__()
-
-        # Attention layers
-        self.attention_layer = nn.TransformerEncoder(
-            nn.TransformerEncoderLayer(
-                d_model=d_model, nhead=nhead, dim_feedforward=512
-            ), 
-            num_layers=num_layers
-        )
-
-    def forward(self, x):
-        return self.attention_layer(x)
-    
 class Network(nn.Module):
     def __init__(self, seq_len, pred_len, c_in, period_len, d_model):
         super(Network, self).__init__()
@@ -30,8 +15,18 @@ class Network(nn.Module):
         self.seg_num_x = self.seq_len // self.period_len
         self.seg_num_y = self.pred_len // self.period_len
 
-        self.attn = TransformerAttention(d_model=self.d_model, nhead=2, num_layers=6)
+        self.conv1d = nn.Conv1d(
+            in_channels=self.enc_in, out_channels=self.enc_in,
+            kernel_size=1 + 2 * (self.period_len // 2),
+            stride=1, padding=self.period_len // 2,
+            padding_mode="zeros", bias=False, groups=self.enc_in
+        )
 
+        self.pool = nn.AvgPool1d(
+            kernel_size=1 + 2 * (self.period_len // 2),
+            stride=1,
+            padding=self.period_len // 2
+        )
 
         self.mlp = nn.Sequential(
             nn.Linear(self.seg_num_x, self.d_model * 2),
@@ -46,7 +41,13 @@ class Network(nn.Module):
         self.fc7 = nn.Linear(pred_len * 2, pred_len)
         self.fc8 = nn.Linear(pred_len, pred_len)
 
-    def forward(self, s, t, a):
+        # Time embedding + Attention
+        self.time_embed = nn.Linear(seq_x_mark.shape[-1], self.d_model)
+        self.attn = nn.MultiheadAttention(self.d_model, num_heads=4, batch_first=True)
+        self.attn_proj = nn.Linear(self.enc_in, self.d_model)
+        self.attn_out_proj = nn.Linear(self.d_model, self.enc_in)
+
+    def forward(self, s, t, seq_x_mark):
         # s: [Batch, Input, Channel]
         # t: [Batch, Input, Channel]
         s = s.permute(0,2,1) # [Batch, Channel, Input]
@@ -57,16 +58,25 @@ class Network(nn.Module):
         I = s.shape[2]
         t = torch.reshape(t, (B*C, I))
 
-        # Seasonal Stream: Conv1d + Pooling
-        s = s.reshape(B * C, I)  # Flattening for Attention
-        s_attn = self.attn(s)  # Apply Attention mechanism
-        s_attn = s_attn.reshape(B, C, self.pred_len)  # Reshape to original batch size
+        # --- Attention Stream ---
+        # Embed time features
+        time_emb = self.time_embed(seq_x_mark)  # [B, seq_len, d_model]
+        # Project s to d_model
+        s_proj = self.attn_proj(s.permute(0,2,1))  # [B, seq_len, d_model]
+        # Apply attention
+        attn_out, _ = self.attn(s_proj, time_emb, time_emb)
+        attn_out = self.attn_out_proj(attn_out)  # [B, seq_len, enc_in]
+        attn_out = attn_out.permute(0,2,1)  # [B, enc_in, seq_len]
+        s = s + attn_out  # Residual connection
 
-        # MLP for processing the seasonal stream output
-        y = self.mlp(s_attn)
+        # Seasonal Stream: Conv1d + Pooling
+        s_conv = self.conv1d(s)  # [B, C, seq_len]
+        s_pool = self.pool(s_conv)  # [B, C, seq_len]
+        s = s_pool + s
+        s = s.reshape(-1, self.seg_num_x, self.period_len).permute(0, 2, 1)
+        y = self.mlp(s)
         y = y.permute(0, 2, 1).reshape(B, self.enc_in, self.pred_len)
         y = y.permute(0, 2, 1)
-
 
         # Linear Stream
         t = self.fc5(t)
