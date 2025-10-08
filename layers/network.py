@@ -5,7 +5,6 @@ from torch import nn
 class channel_attn_block(nn.Module):
     def __init__(self, seq_len, d_model, dropout):
         super(channel_attn_block, self).__init__()
-        print(self, seq_len, d_model, dropout)
         self.channel_att_norm = nn.BatchNorm1d(seq_len)
         self.fft_norm = nn.LayerNorm(d_model)
         self.channel_attn = nn.MultiheadAttention(d_model, num_heads=1, batch_first=True)
@@ -23,7 +22,7 @@ class channel_attn_block(nn.Module):
         res_2 = self.fft_norm(self.fft_layer(res_2) + res_2)
         return res_2
 class Network(nn.Module):
-    def __init__(self, seq_len, pred_len, c_in, d_model, dropout=0.1, n_layers=2):
+    def __init__(self, seq_len, pred_len, c_in, period_len, d_model, dropout=0.1, n_layers=2):
         super(Network, self).__init__()
         self.pred_len = pred_len
         self.seq_len = seq_len
