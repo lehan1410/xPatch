@@ -2,11 +2,29 @@ import torch
 from torch import nn
 
 
+class channel_attn_block(nn.Module):
+    def __init__(self, seq_len, d_model, dropout):
+        super(channel_attn_block, self).__init__()
+        print(self, seq_len, d_model, dropout)
+        self.channel_att_norm = nn.BatchNorm1d(seq_len)
+        self.fft_norm = nn.LayerNorm(d_model)
+        self.channel_attn = nn.MultiheadAttention(d_model, num_heads=1, batch_first=True)
+        self.fft_layer = nn.Sequential(
+            nn.Linear(d_model, d_model * 2),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(d_model * 2, d_model),
+        )
 
+    def forward(self, x):
+        # x: [B, seq_len, d_model]
+        attn_out, _ = self.channel_attn(x, x, x)
+        res_2 = self.channel_att_norm(attn_out + x)
+        res_2 = self.fft_norm(self.fft_layer(res_2) + res_2)
+        return res_2
 class Network(nn.Module):
     def __init__(self, seq_len, pred_len, c_in, d_model, dropout=0.1, n_layers=2):
         super(Network, self).__init__()
-
         self.pred_len = pred_len
         self.seq_len = seq_len
         self.enc_in  = c_in
@@ -62,23 +80,3 @@ class Network(nn.Module):
 
         return t + y
 
-class channel_attn_block(nn.Module):
-    def __init__(self, seq_len, d_model, dropout):
-        super(channel_attn_block, self).__init__()
-        print(dropout)
-        self.channel_att_norm = nn.BatchNorm1d(seq_len)
-        self.fft_norm = nn.LayerNorm(d_model)
-        self.channel_attn = nn.MultiheadAttention(d_model, num_heads=1, batch_first=True)
-        self.fft_layer = nn.Sequential(
-            nn.Linear(d_model, d_model * 2),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(d_model * 2, d_model),
-        )
-
-    def forward(self, x):
-        # x: [B, seq_len, d_model]
-        attn_out, _ = self.channel_attn(x, x, x)
-        res_2 = self.channel_att_norm(attn_out + x)
-        res_2 = self.fft_norm(self.fft_layer(res_2) + res_2)
-        return res_2
