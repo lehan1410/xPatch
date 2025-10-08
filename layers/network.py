@@ -4,7 +4,7 @@ from torch import nn
 class channel_attn_block(nn.Module):
     def __init__(self, enc_in, d_model, dropout):
         super(channel_attn_block, self).__init__()
-        self.channel_att_norm = nn.BatchNorm1d(enc_in)
+        self.channel_att_norm = nn.BatchNorm1d(d_model)
         self.fft_norm = nn.LayerNorm(d_model)
         self.channel_attn = nn.MultiheadAttention(d_model, num_heads=1, batch_first=True)
         self.fft_layer = nn.Sequential(
@@ -16,9 +16,7 @@ class channel_attn_block(nn.Module):
 
     def forward(self, x):
         # x: [B, seq_len, d_model]
-        # Đổi sang [B, d_model, seq_len] để attention trên channel
         x_perm = x.permute(0, 2, 1)  # [B, d_model, seq_len]
-        # Attention trên channel: mỗi chuỗi là một token
         attn_out, _ = self.channel_attn(x_perm.transpose(1,2), x_perm.transpose(1,2), x_perm.transpose(1,2))  # [B, seq_len, d_model]
         attn_out = attn_out.transpose(1,2)  # [B, d_model, seq_len]
         res_2 = self.channel_att_norm(attn_out + x_perm)  # [B, d_model, seq_len]
