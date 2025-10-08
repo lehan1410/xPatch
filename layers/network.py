@@ -2,9 +2,9 @@ import torch
 from torch import nn
 
 class channel_attn_block(nn.Module):
-    def __init__(self, enc_in, d_model, dropout):
+    def __init__(self, seq_len, d_model, dropout):
         super(channel_attn_block, self).__init__()
-        self.channel_att_norm = nn.BatchNorm1d(enc_in)
+        self.channel_att_norm = nn.BatchNorm1d(seq_len)
         self.fft_norm = nn.LayerNorm(d_model)
         self.channel_attn = nn.MultiheadAttention(d_model, num_heads=1, batch_first=True)
         self.fft_layer = nn.Sequential(
@@ -22,40 +22,23 @@ class channel_attn_block(nn.Module):
         return res_2
 
 class Network(nn.Module):
-    def __init__(self, seq_len, pred_len, c_in, period_len, d_model, dropout=0.1):
+    def __init__(self, seq_len, pred_len, c_in, d_model, dropout=0.1):
         super(Network, self).__init__()
 
         self.pred_len = pred_len
         self.seq_len = seq_len
         self.enc_in  = c_in
-        self.period_len = period_len
         self.d_model = d_model
 
-        self.seg_num_x = self.seq_len // self.period_len
-        self.seg_num_y = self.pred_len // self.period_len
-
-        self.conv1d = nn.Conv1d(
-            in_channels=self.enc_in, out_channels=self.d_model,
-            kernel_size=1 + 2 * (self.period_len // 2),
-            stride=1, padding=self.period_len // 2,
-            padding_mode="zeros", bias=False, groups=1
-        )
-
-        self.pool = nn.AvgPool1d(
-            kernel_size=1 + 2 * (self.period_len // 2),
-            stride=1,
-            padding=self.period_len // 2
-        )
-
+        self.channel_proj = nn.Linear(self.enc_in, self.d_model)
         self.channel_attn = channel_attn_block(self.seq_len, self.d_model, dropout)
 
         self.mlp = nn.Sequential(
-            nn.Linear(self.seg_num_x, self.d_model * 2),
+            nn.Linear(self.seq_len, self.d_model * 2),
             nn.GELU(),
-            nn.Linear(self.d_model * 2, self.seg_num_y)
+            nn.Linear(self.d_model * 2, self.pred_len)
         )
 
-        # Chuyển từ d_model về enc_in (C)
         self.out_proj = nn.Linear(self.d_model, self.enc_in)
 
         # Linear Stream
@@ -68,36 +51,26 @@ class Network(nn.Module):
     def forward(self, s, t):
         # s: [Batch, Input, Channel]
         # t: [Batch, Input, Channel]
-        s = s.permute(0,2,1) # [Batch, Channel, Input]
-        t = t.permute(0,2,1) # [Batch, Channel, Input]
+        B, I, C = s.shape
+        s_proj = self.channel_proj(s)  # [B, Input, d_model]
 
-        B = s.shape[0]
-        C = s.shape[1]
-        I = s.shape[2]
-        t = torch.reshape(t, (B*C, I))
+        # Channel Attention
+        s_attn = self.channel_attn(s_proj)  # [B, Input, d_model]
 
-        # Seasonal Stream: Conv1d + Pooling + Channel Attention
-        s_conv = self.conv1d(s)  # [B, d_model, seq_len]
-        s_pool = self.pool(s_conv)  # [B, d_model, seq_len]
-        s_pool = s_pool.permute(0,2,1)  # [B, seq_len, d_model]
-        s_attn = self.channel_attn(s_pool)  # [B, seq_len, d_model]
-        s = s_attn.permute(0,2,1)  # [B, d_model, seq_len]
-
-        s = s.reshape(B*self.d_model, self.seg_num_x, self.period_len).permute(0, 2, 1)
-        y = self.mlp(s)
-        y = y.permute(0, 2, 1).reshape(B, self.d_model, self.pred_len)
-        y = y.permute(0, 2, 1)  # [B, pred_len, d_model]
-
-        # Chuyển về đúng số channel [B, pred_len, C]
+        # MLP dự báo
+        y = self.mlp(s_attn.transpose(1,2))  # [B, d_model, pred_len]
+        y = y.transpose(1,2)  # [B, pred_len, d_model]
         y = self.out_proj(y)  # [B, pred_len, C]
 
         # Linear Stream
+        t = t.permute(0,2,1) # [B, C, Input]
+        t = torch.reshape(t, (B*C, I))
         t = self.fc5(t)
         t = self.gelu1(t)
         t = self.ln1(t)
         t = self.fc7(t)
         t = self.fc8(t)
         t = torch.reshape(t, (B, C, self.pred_len))
-        t = t.permute(0,2,1) # [Batch, pred_len, Channel] = [B, pred_len, C]
+        t = t.permute(0,2,1) # [B, pred_len, C]
 
         return t + y
