@@ -4,6 +4,7 @@ from torch import nn
 class channel_attn_block(nn.Module):
     def __init__(self, seq_len, d_model, dropout):
         super(channel_attn_block, self).__init__()
+        print(dropout)
         self.channel_att_norm = nn.BatchNorm1d(seq_len)
         self.fft_norm = nn.LayerNorm(d_model)
         self.channel_attn = nn.MultiheadAttention(d_model, num_heads=1, batch_first=True)
