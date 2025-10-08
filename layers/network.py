@@ -2,24 +2,33 @@ import torch
 from torch import nn
 
 class Network(nn.Module):
-    def __init__(self, seq_len, pred_len, c_in, time_feat_dim, d_model, num_scales=3):
+    def __init__(self, seq_len, pred_len, c_in, period_len, d_model):
         super(Network, self).__init__()
 
         self.pred_len = pred_len
         self.seq_len = seq_len
         self.enc_in  = c_in
-        self.time_feat_dim = time_feat_dim  # số chiều đặc trưng thời gian
+        self.period_len = period_len
         self.d_model = d_model
-        self.num_scales = num_scales
 
-        # MultiScale Attention
-        self.attn_proj = nn.Linear(self.enc_in, self.d_model)
-        self.time_proj = nn.Linear(self.time_feat_dim, self.d_model)
-        self.attn_layers = nn.ModuleList([
-            nn.MultiheadAttention(self.d_model, num_heads=4, batch_first=True)
-            for _ in range(num_scales)
-        ])
-        self.out_proj = nn.Linear(self.d_model, self.enc_in)
+        self.seg_num_x = self.seq_len // self.period_len
+        self.seg_num_y = self.pred_len // self.period_len
+
+        self.conv1d = nn.Conv1d(
+            in_channels=self.enc_in, out_channels=self.enc_in,
+            kernel_size=1 + 2 * (self.period_len // 2),
+            stride=1, padding=self.period_len // 2,
+            padding_mode="zeros", bias=False, groups=self.enc_in
+        )
+
+        # Attention cho từng subsequence (channel nhìn lẫn nhau)
+        self.subseq_attn = nn.MultiheadAttention(self.enc_in, num_heads=2, batch_first=True)
+
+        self.mlp = nn.Sequential(
+            nn.Linear(self.seg_num_x, self.d_model * 2),
+            nn.GELU(),
+            nn.Linear(self.d_model * 2, self.seg_num_y)
+        )
 
         # Linear Stream
         self.fc5 = nn.Linear(seq_len, pred_len * 2)
@@ -28,38 +37,34 @@ class Network(nn.Module):
         self.fc7 = nn.Linear(pred_len * 2, pred_len)
         self.fc8 = nn.Linear(pred_len, pred_len)
 
-    def forward(self, s, t, seq_x_mark):
+    def forward(self, s, t):
         # s: [Batch, Input, Channel]
         # t: [Batch, Input, Channel]
-        # seq_x_mark: [Batch, Input, time_feat_dim]
         s = s.permute(0,2,1) # [Batch, Channel, Input]
         t = t.permute(0,2,1) # [Batch, Channel, Input]
 
-        B, C, I = s.shape
+        B = s.shape[0]
+        C = s.shape[1]
+        I = s.shape[2]
         t = torch.reshape(t, (B*C, I))
 
-        # Multiscale Attention Stream
-        attn_outputs = []
-        for scale in range(self.num_scales):
-            factor = 2 ** scale
-            s_ds = s[:, :, ::factor]  # [B, C, I//factor]
-            time_ds = seq_x_mark[:, ::factor, :]  # [B, I//factor, time_feat_dim]
-            s_proj = self.attn_proj(s_ds.permute(0,2,1))  # [B, I//factor, d_model]
-            # Reshape time_ds for Linear
-            B_ds, I_ds, P = time_ds.shape  # P = time_feat_dim
-            time_ds_reshape = time_ds.reshape(-1, P)  # [B*I//factor, time_feat_dim]
-            time_emb = self.time_proj(time_ds_reshape) # [B*I//factor, d_model]
-            time_emb = time_emb.reshape(B_ds, I_ds, self.d_model) # [B, I//factor, d_model]
-            attn_out, _ = self.attn_layers[scale](s_proj, time_emb, time_emb)
-            attn_out = self.out_proj(attn_out)            # [B, I//factor, enc_in]
-            # Upsample to pred_len
-            attn_out = attn_out.permute(0,2,1)
-            attn_out = nn.functional.interpolate(attn_out, size=self.pred_len, mode='linear', align_corners=False)
-            attn_outputs.append(attn_out)
+        # Seasonal Stream: Conv1d
+        s_conv = self.conv1d(s)  # [B, C, seq_len]
+        s = s_conv + s  # residual
 
-        # Tổng hợp các attention outputs từ các scale
-        y = sum(attn_outputs) / self.num_scales  # [B, enc_in, pred_len]
-        y = y.permute(0,2,1)  # [B, pred_len, enc_in]
+        # Chia thành các subsequence và attention giữa các channel
+        s_subseq = s.reshape(B, C, self.seg_num_x, self.period_len)  # [B, C, seg_num_x, period_len]
+        s_subseq = s_subseq.permute(0,2,3,1)  # [B, seg_num_x, period_len, C]
+        s_subseq = s_subseq.reshape(-1, self.period_len, C)  # [B*seg_num_x, period_len, C]
+
+        # Attention giữa các channel trong từng subsequence
+        attn_out, _ = self.subseq_attn(s_subseq, s_subseq, s_subseq)  # [B*seg_num_x, period_len, C]
+        attn_out = attn_out.reshape(B, self.seg_num_x, self.period_len, C).permute(0,3,1,2)  # [B, C, seg_num_x, period_len]
+        s = attn_out.reshape(B*C, self.seg_num_x, self.period_len)  # [B*C, seg_num_x, period_len]
+
+        y = self.mlp(s)
+        y = y.permute(0, 2, 1).reshape(B, self.enc_in, self.pred_len)
+        y = y.permute(0, 2, 1)
 
         # Linear Stream
         t = self.fc5(t)
