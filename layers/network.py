@@ -119,12 +119,12 @@ class Network(nn.Module):
         s_pool = self.pool(s_conv)  # [B, C, seq_len]
 
         # Auto-Regressive Self-Attention branch
-        s_ar = s.permute(0, 1, 2)  # [B, Input, Channel]
+        s_ar = s.permute(0, 2, 1)  # [B, Input, Channel]
         for i in range(self.n_layers):
             s_ar = self.ar_attn_blocks[i](s_ar)  # [B, enc_in, seq_len]
 
         # Tổng hợp đặc trưng attention, conv, AR self-attn
-        fused_seq = attn_seq + s_pool + s_conv + s_ar + s  # [B, enc_in, seq_len]
+        fused_seq = attn_seq + s_pool + s_conv + s_ar # [B, enc_in, seq_len]
 
         # Reshape để dùng MLP như yêu cầu
         fused_seq = fused_seq.reshape(-1, self.seg_num_x, self.period_len).permute(0, 2, 1)  # [B*C, period_len, seg_num_x]
