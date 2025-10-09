@@ -47,6 +47,12 @@ class Network(nn.Module):
             padding_mode="zeros", bias=False, groups=self.enc_in
         )
 
+        self.pool = nn.AvgPool1d(
+            kernel_size=1 + 2 * (self.period_len // 2),
+            stride=1,
+            padding=self.period_len // 2
+        )
+
         # Chuyển từ d_model về seq_len để dùng MLP như yêu cầu
         self.to_seq = nn.Linear(self.d_model, self.seq_len)
 
@@ -78,11 +84,12 @@ class Network(nn.Module):
         attn_seq = self.to_seq(s_proj)  # [B, Channel, seq_len]
 
         # Conv branch (depthwise)
-        s_conv = s.permute(0, 2, 1)  # [B, Channel, Input]
-        conv_seq = self.conv1d(s_conv) + s_conv  # [B, Channel, seq_len]
+        s = s.permute(0, 2, 1)  # [B, Channel, Input]
+        s_conv = self.conv1d(s)  # [B, C, seq_len]
+        s_pool = self.pool(s_conv)  # [B, C, seq_len]
 
         # Tổng hợp đặc trưng attention và conv
-        fused_seq = attn_seq + conv_seq  # [B, Channel, seq_len]
+        fused_seq = attn_seq + s_pool + s  # [B, Channel, seq_len]
 
         # Reshape để dùng MLP như yêu cầu
         fused_seq = fused_seq.reshape(-1, self.seg_num_x, self.period_len).permute(0, 2, 1)  # [B*C, period_len, seg_num_x]
