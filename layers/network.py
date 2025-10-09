@@ -11,7 +11,6 @@ class channel_attn_block(nn.Module):
         self.fft_layer = nn.Sequential(
             nn.Linear(d_model, int(d_model*2)),
             nn.GELU(),
-            nn.Dropout(dropout),
             nn.Linear(int(d_model*2), d_model),
         )
     def forward(self, residual):
@@ -37,7 +36,7 @@ class Network(nn.Module):
         self.channel_proj = nn.Linear(self.seq_len, self.d_model)
         self.channel_attn_blocks = nn.ModuleList([
             channel_attn_block(self.enc_in, self.d_model, 0.1)
-            for _ in range(2)
+            for _ in range(3)
         ])
 
         self.seg_num_x = self.seq_len // self.period_len
