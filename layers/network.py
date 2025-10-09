@@ -25,7 +25,7 @@ class temporal_attn_block(nn.Module):
     def __init__(self, enc_in, seq_len, d_model, dropout):
         super(temporal_attn_block, self).__init__()
         self.input_proj = nn.Linear(enc_in, d_model)  # chuyển channel -> d_model
-        self.temporal_att_norm = nn.LayerNorm(enc_in)
+        self.temporal_att_norm = nn.LayerNorm(d_model)
         self.fft_norm = nn.LayerNorm(d_model)
         self.temporal_attn = nn.MultiheadAttention(d_model, num_heads=1, batch_first=True)
         self.fft_layer = nn.Sequential(
