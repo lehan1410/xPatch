@@ -7,7 +7,6 @@ class channel_attn_block(nn.Module):
         self.channel_att_norm = nn.BatchNorm1d(enc_in)
         self.fft_norm = nn.LayerNorm(d_model)
         self.channel_attn = nn.MultiheadAttention(d_model, num_heads=1, batch_first=True)
-    
         self.fft_layer = nn.Sequential(
             nn.Linear(d_model, int(d_model*2)),
             nn.GELU(),
@@ -21,26 +20,33 @@ class channel_attn_block(nn.Module):
         res_2 = self.fft_norm(self.fft_layer(res_2) + res_2)
         return res_2
 
-class temporal_attn_block(nn.Module):
+class ar_self_attn_block(nn.Module):
     def __init__(self, enc_in, seq_len, d_model, dropout):
-        super(temporal_attn_block, self).__init__()
-        self.temporal_att_norm = nn.LayerNorm(d_model)
-        self.fft_norm = nn.LayerNorm(d_model)
-        self.temporal_attn = nn.MultiheadAttention(d_model, num_heads=1, batch_first=True)
-        self.fft_layer = nn.Sequential(
+        super(ar_self_attn_block, self).__init__()
+        self.input_proj = nn.Linear(enc_in, d_model)
+        self.self_attn = nn.MultiheadAttention(d_model, num_heads=1, batch_first=True)
+        self.norm1 = nn.LayerNorm(d_model)
+        self.ffn = nn.Sequential(
             nn.Linear(d_model, d_model * 2),
             nn.GELU(),
             nn.Dropout(dropout),
             nn.Linear(d_model * 2, d_model),
         )
+        self.norm2 = nn.LayerNorm(d_model)
+        self.out_proj = nn.Linear(d_model, enc_in)  # Linear để điều chỉnh về số channel
+
     def forward(self, x):
-        # x: [B, Channel, seq_len]
-        attn_out, _ = self.temporal_attn(x, x, x)  # [B, seq_len, d_model]
-        attn_out = attn_out + x
-        res_2 = self.temporal_att_norm(attn_out)
-        res_2 = self.fft_norm(self.fft_layer(res_2) + res_2)
-        return res_2.permute(0, 2, 1)  # [B, d_model, seq_len]
-    
+        # x: [B, seq_len, enc_in]
+        x_embed = self.input_proj(x)  # [B, seq_len, d_model]
+        seq_len = x_embed.size(1)
+        attn_mask = torch.triu(torch.ones(seq_len, seq_len, device=x.device), diagonal=1).bool()
+        attn_out, _ = self.self_attn(x_embed, x_embed, x_embed, attn_mask=attn_mask)
+        x = self.norm1(attn_out + x_embed)
+        x = self.norm2(self.ffn(x) + x)
+        x = self.out_proj(x)  # [B, seq_len, enc_in]
+        x = x.permute(0, 2, 1)  # [B, enc_in, seq_len]
+        return x
+
 class Network(nn.Module):
     def __init__(self, seq_len, pred_len, c_in, period_len, d_model, dropout=0.1, n_layers=2):
         super(Network, self).__init__()
@@ -60,10 +66,8 @@ class Network(nn.Module):
             for _ in range(self.n_layers)
         ])
 
-        self.tem_proj = nn.Linear(self.enc_in, self.d_model)
-
-        self.temporal_attn_blocks = nn.ModuleList([
-            temporal_attn_block(self.enc_in, self.seq_len, self.d_model, dropout)
+        self.ar_attn_blocks = nn.ModuleList([
+            ar_self_attn_block(self.enc_in, self.seq_len, self.d_model, dropout)
             for _ in range(self.n_layers)
         ])
 
@@ -80,7 +84,6 @@ class Network(nn.Module):
             padding=self.period_len // 2
         )
 
-        # Chuyển từ d_model về seq_len để dùng MLP như yêu cầu
         self.to_seq = nn.Linear(self.d_model, self.seq_len)
 
         self.mlp = nn.Sequential(
@@ -97,7 +100,6 @@ class Network(nn.Module):
         self.ln1 = nn.LayerNorm(pred_len * 2)
         self.fc7 = nn.Linear(pred_len * 2, pred_len)
         self.fc8 = nn.Linear(pred_len, pred_len)
-        
 
     def forward(self, s, t):
         # s: [Batch, Input, Channel]
@@ -111,18 +113,18 @@ class Network(nn.Module):
             s_proj = self.channel_attn_blocks[i](s_proj)  # [B, Channel, d_model]
         attn_seq = self.to_seq(s_proj)  # [B, Channel, seq_len]
 
-        s_temp = s.permute(0, 2, 1)  # [B, Channel, Input]
-        s_temp = self.tem_proj(s_temp)
-        for i in range(self.n_layers):
-            s_temp = self.temporal_attn_blocks[i](s_temp)
-
         # Conv branch (depthwise)
-        s = s.permute(0, 2, 1)  # [B, Channel, Input]
-        s_conv = self.conv1d(s)  # [B, C, seq_len]
+        s_conv = s.permute(0, 2, 1)  # [B, Channel, Input]
+        s_conv = self.conv1d(s_conv)  # [B, C, seq_len]
         s_pool = self.pool(s_conv)  # [B, C, seq_len]
 
-        # Tổng hợp đặc trưng attention và conv
-        fused_seq = attn_seq + s_pool + s + s_temp  # [B, Channel, seq_len]
+        # Auto-Regressive Self-Attention branch
+        s_ar = s.permute(0, 1, 2)  # [B, Input, Channel]
+        for i in range(self.n_layers):
+            s_ar = self.ar_attn_blocks[i](s_ar)  # [B, enc_in, seq_len]
+
+        # Tổng hợp đặc trưng attention, conv, AR self-attn
+        fused_seq = attn_seq + s_pool + s_conv + s_ar + s  # [B, enc_in, seq_len]
 
         # Reshape để dùng MLP như yêu cầu
         fused_seq = fused_seq.reshape(-1, self.seg_num_x, self.period_len).permute(0, 2, 1)  # [B*C, period_len, seg_num_x]
