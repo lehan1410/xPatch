@@ -119,7 +119,8 @@ class Network(nn.Module):
         s_pool = self.pool(s_conv)  # [B, C, seq_len]
 
         # Auto-Regressive Self-Attention branch
-        s_ar = s.permute(0, 2, 1)  # [B, Input, Channel]
+        s_ar = s  # [B, Input, Channel]
+        s_ar = s_ar.permute(0, 1, 2)
         for i in range(self.n_layers):
             s_ar = self.ar_attn_blocks[i](s_ar)  # [B, enc_in, seq_len]
 
