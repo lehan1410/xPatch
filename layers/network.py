@@ -86,10 +86,10 @@ class Network(nn.Module):
         # Conv branch (depthwise)
         s = s.permute(0, 2, 1)  # [B, Channel, Input]
         s_conv = self.conv1d(s)  # [B, C, seq_len]
-        s_pool = self.pool(s)  # [B, C, seq_len]
+        s_pool = self.pool(s_conv)  # [B, C, seq_len]
 
         # Tổng hợp đặc trưng attention và conv
-        fused_seq = attn_seq + s_pool + s_conv + s  # [B, Channel, seq_len]
+        fused_seq = attn_seq + s_pool + s  # [B, Channel, seq_len]
 
         # Reshape để dùng MLP như yêu cầu
         fused_seq = fused_seq.reshape(-1, self.seg_num_x, self.period_len).permute(0, 2, 1)  # [B*C, period_len, seg_num_x]
