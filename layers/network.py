@@ -8,7 +8,6 @@ class channel_attn_block(nn.Module):
         self.fft_norm = nn.LayerNorm(d_model)
         self.channel_attn = nn.MultiheadAttention(d_model, num_heads=1, batch_first=True)
     
-        
         self.fft_layer = nn.Sequential(
             nn.Linear(d_model, int(d_model*2)),
             nn.GELU(),
@@ -41,6 +40,13 @@ class Network(nn.Module):
             for _ in range(self.n_layers)
         ])
 
+        self.conv1d = nn.Conv1d(
+            in_channels=self.enc_in, out_channels=self.enc_in,
+            kernel_size=1 + 2 * (self.period_len // 2),
+            stride=1, padding=self.period_len // 2,
+            padding_mode="zeros", bias=False, groups=self.enc_in
+        )
+
         # Chuyển từ d_model về seq_len để dùng MLP như yêu cầu
         self.to_seq = nn.Linear(self.d_model, self.seq_len)
 
@@ -69,13 +75,18 @@ class Network(nn.Module):
         s_proj = self.channel_proj(s_proj)  # [B, Channel, d_model]
         for i in range(self.n_layers):
             s_proj = self.channel_attn_blocks[i](s_proj)  # [B, Channel, d_model]
-
-        # Chuyển từ d_model về seq_len
         attn_seq = self.to_seq(s_proj)  # [B, Channel, seq_len]
 
+        # Conv branch (depthwise)
+        # s_conv = s.permute(0, 2, 1)  # [B, Channel, Input]
+        conv_seq = self.conv1d(s) + s  # [B, Channel, seq_len]
+
+        # Tổng hợp đặc trưng attention và conv
+        fused_seq = attn_seq + conv_seq  # [B, Channel, seq_len]
+
         # Reshape để dùng MLP như yêu cầu
-        attn_seq = attn_seq.reshape(-1, self.seg_num_x, self.period_len).permute(0, 2, 1)  # [B*C, period_len, seg_num_x]
-        y = self.mlp(attn_seq)  # [B*C, period_len, seg_num_y]
+        fused_seq = fused_seq.reshape(-1, self.seg_num_x, self.period_len).permute(0, 2, 1)  # [B*C, period_len, seg_num_x]
+        y = self.mlp(fused_seq)  # [B*C, period_len, seg_num_y]
         y = y.permute(0, 2, 1).reshape(B, self.enc_in, self.pred_len)  # [B, Channel, pred_len]
         y = y.permute(0, 2, 1)  # [B, pred_len, Channel]
 
