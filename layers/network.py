@@ -86,7 +86,7 @@ class Network(nn.Module):
         s_pool = self.pool(s_conv)  # [B, C, seq_len]
         s_seasonal = s_pool + s
         # Attention branch (channel-wise)
-        s_attn = s_seasonal
+        s_attn = self.channel_proj(s_seasonal) 
         for i in range(len(self.channel_attn_blocks)):
             s_attn = self.channel_attn_blocks[i](s_attn)  # [B, C, d_model]
         # Reduce d_model to match s_seasonal for fusion (e.g. mean or linear)
