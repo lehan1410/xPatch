@@ -78,7 +78,7 @@ class Network(nn.Module):
         attn_seq = self.to_seq(s_proj)  # [B, Channel, seq_len]
 
         # Conv branch (depthwise)
-        # s_conv = s.permute(0, 2, 1)  # [B, Channel, Input]
+        s_conv = s.permute(0, 2, 1)  # [B, Channel, Input]
         conv_seq = self.conv1d(s) + s  # [B, Channel, seq_len]
 
         # Tổng hợp đặc trưng attention và conv
