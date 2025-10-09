@@ -22,25 +22,27 @@ class channel_attn_block(nn.Module):
         return res_2
 
 class temporal_attn_block(nn.Module):
-    def __init__(self, enc_in, seq_len, dropout):
+    def __init__(self, enc_in, seq_len, d_model, dropout):
         super(temporal_attn_block, self).__init__()
-        self.temporal_att_norm = nn.BatchNorm1d(enc_in)
-        self.fft_norm = nn.LayerNorm(seq_len)
-        self.temporal_attn = nn.MultiheadAttention(seq_len, num_heads=1, batch_first=True)
+        self.input_proj = nn.Linear(enc_in, d_model)  # chuyển channel -> d_model
+        self.temporal_att_norm = nn.LayerNorm(enc_in)
+        self.fft_norm = nn.LayerNorm(d_model)
+        self.temporal_attn = nn.MultiheadAttention(d_model, num_heads=1, batch_first=True)
         self.fft_layer = nn.Sequential(
-            nn.Linear(seq_len, seq_len * 2),
+            nn.Linear(d_model, d_model * 2),
             nn.GELU(),
             nn.Dropout(dropout),
-            nn.Linear(seq_len * 2, seq_len),
+            nn.Linear(d_model * 2, d_model),
         )
     def forward(self, x):
         # x: [B, Channel, seq_len]
         x_t = x.permute(0, 2, 1)  # [B, seq_len, Channel]
-        attn_out, _ = self.temporal_attn(x_t, x_t, x_t)  # [B, seq_len, Channel]
+        x_t = self.input_proj(x_t) # [B, seq_len, d_model]
+        attn_out, _ = self.temporal_attn(x_t, x_t, x_t)  # [B, seq_len, d_model]
         attn_out = attn_out + x_t
-        res_2 = self.temporal_att_norm(attn_out.permute(0, 2, 1))  # [B, Channel, seq_len]
+        res_2 = self.temporal_att_norm(attn_out)
         res_2 = self.fft_norm(self.fft_layer(res_2) + res_2)
-        return res_2  # [B, Channel, seq_len]
+        return res_2.permute(0, 2, 1)  # [B, d_model, seq_len]
     
 class Network(nn.Module):
     def __init__(self, seq_len, pred_len, c_in, period_len, d_model, dropout=0.1, n_layers=2):
@@ -62,7 +64,7 @@ class Network(nn.Module):
         ])
 
         self.temporal_attn_blocks = nn.ModuleList([
-            temporal_attn_block(self.enc_in, self.seq_len, dropout)
+            temporal_attn_block(self.enc_in, self.seq_len, self.d_model, dropout)
             for _ in range(self.n_layers)
         ])
 
