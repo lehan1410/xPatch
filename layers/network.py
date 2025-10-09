@@ -4,8 +4,9 @@ from torch import nn
 class channel_attn_block(nn.Module):
     def __init__(self, enc_in, d_model, dropout):
         super(channel_attn_block, self).__init__()
-        self.channel_att_norm = nn.BatchNorm1d(d_model)
+        self.channel_att_norm = nn.BatchNorm1d(enc_in)
         self.fft_norm = nn.LayerNorm(d_model)
+        # Attention trên channel: mỗi channel là một token, embedding là d_model
         self.channel_attn = nn.MultiheadAttention(d_model, num_heads=1, batch_first=True)
         self.fft_layer = nn.Sequential(
             nn.Linear(d_model, int(d_model*2)),
@@ -15,8 +16,11 @@ class channel_attn_block(nn.Module):
         )
     def forward(self, residual):
         # residual: [B, Channel, d_model]
+        # Attention trên channel: mỗi channel là một token
+        # MultiheadAttention yêu cầu [B, Channel, d_model] với batch_first=True
         attn_out, _ = self.channel_attn(residual, residual, residual)  # [B, Channel, d_model]
-        res_2 = self.channel_att_norm(attn_out.transpose(1, 2)).transpose(1, 2)
+        # BatchNorm1d expects [B, enc_in, d_model], normalize trên channel
+        res_2 = self.channel_att_norm(attn_out)  # [B, Channel, d_model]
         res_2 = self.fft_norm(self.fft_layer(res_2) + res_2)
         return res_2
 
@@ -41,7 +45,7 @@ class Network(nn.Module):
             nn.Linear(self.d_model * 2, self.pred_len)
         )
 
-        self.out_proj = nn.Linear(self.d_model, self.enc_in)
+        self.out_proj = nn.Linear(self.pred_len, self.enc_in)
 
         # Linear Stream
         self.fc5 = nn.Linear(seq_len, pred_len * 2)
@@ -65,7 +69,9 @@ class Network(nn.Module):
         # MLP dự báo
         y = self.mlp(s_proj)  # [B, Channel, pred_len]
         y = y.permute(0, 2, 1)  # [B, pred_len, Channel]
-        y = self.out_proj(y)    # [B, pred_len, Channel]
+        # Nếu muốn đầu ra [B, pred_len, Channel], không cần out_proj nữa
+        # Nếu muốn [B, pred_len, enc_in], dùng out_proj
+        # y = self.out_proj(y)    # [B, pred_len, enc_in] (nếu cần)
 
         # Linear Stream
         t = t.permute(0,2,1) # [B, C, Input]
