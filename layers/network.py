@@ -24,7 +24,6 @@ class channel_attn_block(nn.Module):
 class temporal_attn_block(nn.Module):
     def __init__(self, enc_in, seq_len, d_model, dropout):
         super(temporal_attn_block, self).__init__()
-        self.input_proj = nn.Linear(enc_in, d_model)  # chuyển channel -> d_model
         self.temporal_att_norm = nn.LayerNorm(d_model)
         self.fft_norm = nn.LayerNorm(d_model)
         self.temporal_attn = nn.MultiheadAttention(d_model, num_heads=1, batch_first=True)
@@ -36,10 +35,8 @@ class temporal_attn_block(nn.Module):
         )
     def forward(self, x):
         # x: [B, Channel, seq_len]
-        x_t = x.permute(0, 2, 1)  # [B, seq_len, Channel]
-        x_t = self.input_proj(x_t) # [B, seq_len, d_model]
-        attn_out, _ = self.temporal_attn(x_t, x_t, x_t)  # [B, seq_len, d_model]
-        attn_out = attn_out + x_t
+        attn_out, _ = self.temporal_attn(x, x, x)  # [B, seq_len, d_model]
+        attn_out = attn_out + x
         res_2 = self.temporal_att_norm(attn_out)
         res_2 = self.fft_norm(self.fft_layer(res_2) + res_2)
         return res_2.permute(0, 2, 1)  # [B, d_model, seq_len]
@@ -62,6 +59,8 @@ class Network(nn.Module):
             channel_attn_block(self.enc_in, self.d_model, dropout)
             for _ in range(self.n_layers)
         ])
+
+        self.tem_proj = nn.Linear(self.enc_in, self.d_model)
 
         self.temporal_attn_blocks = nn.ModuleList([
             temporal_attn_block(self.enc_in, self.seq_len, self.d_model, dropout)
@@ -113,6 +112,7 @@ class Network(nn.Module):
         attn_seq = self.to_seq(s_proj)  # [B, Channel, seq_len]
 
         s_temp = s.permute(0, 2, 1)  # [B, Channel, Input]
+        s_temp = self.tem_proj(s_temp)
         for i in range(self.n_layers):
             s_temp = self.temporal_attn_blocks[i](s_temp)
 
