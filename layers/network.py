@@ -25,7 +25,7 @@ class channel_attn_block(nn.Module):
         return res_2
 
 class Network(nn.Module):
-    def __init__(self, seq_len, pred_len, c_in, period_len, d_model, dropout=0.1, n_layers=3):
+    def __init__(self, seq_len, pred_len, c_in, period_len, d_model, dropout=0.1, n_layers=2):
         super(Network, self).__init__()
         self.pred_len = pred_len
         self.seq_len = seq_len
