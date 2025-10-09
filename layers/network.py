@@ -7,6 +7,8 @@ class channel_attn_block(nn.Module):
         self.channel_att_norm = nn.BatchNorm1d(enc_in)
         self.fft_norm = nn.LayerNorm(d_model)
         self.channel_attn = nn.MultiheadAttention(d_model, num_heads=1, batch_first=True)
+    
+        
         self.fft_layer = nn.Sequential(
             nn.Linear(d_model, int(d_model*2)),
             nn.GELU(),
@@ -15,6 +17,7 @@ class channel_attn_block(nn.Module):
         )
     def forward(self, residual):
         attn_out, _ = self.channel_attn(residual, residual, residual)  # [B, Channel, d_model]
+        attn_out = attn_out + residual
         res_2 = self.channel_att_norm(attn_out)
         res_2 = self.fft_norm(self.fft_layer(res_2) + res_2)
         return res_2
@@ -50,8 +53,7 @@ class Network(nn.Module):
         self.out_proj = nn.Linear(self.pred_len, self.enc_in)
 
         # Linear Stream
-        self.fc5 = nn.Linear(seq_len, pred_len * 4)
-        self.avgpool1 = nn.AvgPool1d(kernel_size=2)
+        self.fc5 = nn.Linear(seq_len, pred_len * 2)
         self.gelu1 = nn.GELU()
         self.ln1 = nn.LayerNorm(pred_len * 2)
         self.fc7 = nn.Linear(pred_len * 2, pred_len)
@@ -81,7 +83,6 @@ class Network(nn.Module):
         t = t.permute(0,2,1) # [B, C, Input]
         t = torch.reshape(t, (B*C, I))
         t = self.fc5(t)
-        t = self.avgpool1(t)
         t = self.gelu1(t)
         t = self.ln1(t)
         t = self.fc7(t)
