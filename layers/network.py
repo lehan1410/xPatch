@@ -87,8 +87,8 @@ class Network(nn.Module):
 
         # Đưa qua MLP như cũ
         y = self.mlp(s_fused)  # [B, C, seg_num_y]
-        y = y.reshape(B, C, self.seg_num_y * self.period_len)[:, :, :self.pred_len]  # [B, C, pred_len]
-        y = y.permute(0, 2, 1)  # [B, pred_len, C]
+        y = y.permute(0, 2, 1).reshape(B, self.enc_in, self.pred_len)
+        y = y.permute(0, 2, 1)
 
         # Linear Stream
         t = self.fc5(t)
