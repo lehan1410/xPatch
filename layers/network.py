@@ -12,28 +12,28 @@ class Network(nn.Module):
         self.d_model = d_model
         self.dropout = dropout
 
+        self.num_subseq = self.pred_len // self.period_len
+
         # Attention cho channel
         self.channel_attn = nn.MultiheadAttention(
             embed_dim=self.enc_in, num_heads=1, batch_first=True
         )
 
-        # Attention theo chiều thời gian (pattern thời gian)
+        # Attention theo chiều thời gian cho từng subsequence
         self.time_attn = nn.MultiheadAttention(
-            embed_dim=self.seq_len, num_heads=1, batch_first=True
+            embed_dim=self.period_len, num_heads=1, batch_first=True
         )
 
-        # Linear pipeline cho seasonal
+        # Linear pipeline cho seasonal từng subsequence
         self.input_proj = nn.Linear(self.seq_len, self.d_model)
         self.model = nn.Sequential(
             nn.Linear(self.d_model, self.d_model),
-            nn.GELU(),
-            nn.Linear(self.d_model, self.d_model),
-            nn.GELU(),
+            nn.GELU()
         )
-        self.output_proj = nn.Sequential(
-            nn.Dropout(self.dropout),
-            nn.Linear(self.d_model, self.pred_len)
-        )
+        self.dropout_layer = nn.Dropout(self.dropout)
+        # Linear để lấy đặc trưng cho subsequence (không dùng mean)
+        self.subseq_fusion = nn.Linear(self.period_len * self.d_model, self.period_len)
+        self.subseq_proj = nn.Linear(self.period_len, self.period_len)
 
         # Linear Stream cho trend
         self.fc5 = nn.Linear(seq_len, pred_len * 2)
@@ -56,21 +56,32 @@ class Network(nn.Module):
         channel_attn_out, _ = self.channel_attn(s_channel, s_channel, s_channel)  # [B, seq_len, C]
         s_channel = channel_attn_out.permute(0, 2, 1)  # [B, C, seq_len]
 
-        # Attention theo chiều thời gian (pattern thời gian)
-        # Đưa về [B*C, 1, seq_len] để dùng attention
-        s_time_in = s_channel.reshape(B*C, 1, self.seq_len)
-        time_attn_out, _ = self.time_attn(s_time_in, s_time_in, s_time_in)  # [B*C, 1, seq_len]
-        time_attn_out = time_attn_out.squeeze(1)  # [B*C, seq_len]
+        # Project lên d_model
+        seasonal = self.input_proj(s_channel.reshape(B*C, self.seq_len))  # [B*C, d_model]
+        seasonal = self.model(seasonal)                                   # [B*C, d_model]
+        seasonal = self.dropout_layer(seasonal)
 
-        # Linear pipeline cho seasonal
-        seasonal = self.input_proj(time_attn_out)             # [B*C, d_model]
-        seasonal = self.model(seasonal)                       # [B*C, d_model]
-        seasonal = self.output_proj(seasonal)                 # [B*C, pred_len]
+        # Dự đoán từng subsequence
+        seasonal_subseq = []
+        for i in range(self.num_subseq):
+            # Tạo đặc trưng cho subsequence
+            subseq_feat = seasonal.unsqueeze(1).repeat(1, self.period_len, 1)  # [B*C, period_len, d_model]
+            # Attention theo chiều thời gian
+            subseq_feat, _ = self.time_attn(subseq_feat, subseq_feat, subseq_feat)  # [B*C, period_len, d_model]
+            # Lấy đặc trưng bằng Linear thay vì mean
+            subseq_feat = subseq_feat.reshape(-1, self.period_len * self.d_model)  # [B*C, period_len * d_model]
+            subseq_feat = self.subseq_fusion(subseq_feat)  # [B*C, period_len]
+            # Dự đoán cho subsequence
+            subseq_out = self.subseq_proj(subseq_feat)  # [B*C, period_len]
+            seasonal_subseq.append(subseq_out)
+
+        # Ghép các subsequence lại
+        seasonal = torch.cat(seasonal_subseq, dim=-1)  # [B*C, pred_len]
         seasonal = seasonal.reshape(B, C, self.pred_len)
-        seasonal = seasonal.permute(0, 2, 1)                  # [B, pred_len, C]
+        seasonal = seasonal.permute(0, 2, 1)           # [B, pred_len, C]
 
         # Trend Stream: thêm residual
-        t_trend_origin = t_trend.clone()                      # [B*C, seq_len]
+        t_trend_origin = t_trend.clone()               # [B*C, seq_len]
         t_trend = self.fc5(t_trend)
         t_trend = self.gelu1(t_trend)
         t_trend = self.ln1(t_trend)
