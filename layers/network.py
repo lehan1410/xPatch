@@ -2,7 +2,7 @@ import torch
 from torch import nn
 
 class Network(nn.Module):
-    def __init__(self, seq_len, pred_len, c_in, period_len, d_model, dropout=0.1):
+    def __init__(self, seq_len, pred_len, c_in, period_len, d_model, dropout=0.1, n_attn=2):
         super(Network, self).__init__()
 
         # Parameters
@@ -28,16 +28,20 @@ class Network(nn.Module):
             padding=self.period_len // 2
         )
 
-        # Attention giữa các subsequence
-        self.subseq_attn = nn.MultiheadAttention(
-            embed_dim=self.period_len, num_heads=1, batch_first=True
-        )
+        # Nhiều lớp attention giữa các subsequence
+        self.subseq_attn_layers = nn.ModuleList([
+            nn.MultiheadAttention(
+                embed_dim=self.period_len, num_heads=1, batch_first=True
+            ) for _ in range(n_attn)
+        ])
 
-        self.channel_attn = nn.MultiheadAttention(
-            embed_dim=self.enc_in, num_heads=1, batch_first=True
-        )
+        # Nhiều lớp attention giữa các channel
+        self.channel_attn_layers = nn.ModuleList([
+            nn.MultiheadAttention(
+                embed_dim=self.enc_in, num_heads=1, batch_first=True
+            ) for _ in range(n_attn)
+        ])
 
-        # FFT Layer tăng khả năng biểu diễn
         self.fft_layer = nn.Sequential(
             nn.Linear(self.period_len, int(self.period_len * 2)),
             nn.GELU(),
@@ -51,7 +55,6 @@ class Network(nn.Module):
             nn.Linear(self.d_model * 2, self.seg_num_y)
         )
 
-        # Linear Stream
         self.fc5 = nn.Linear(seq_len, pred_len * 2)
         self.gelu1 = nn.GELU()
         self.ln1 = nn.LayerNorm(pred_len * 2)
@@ -59,31 +62,32 @@ class Network(nn.Module):
         self.fc8 = nn.Linear(pred_len, pred_len)
 
     def forward(self, s, t):
-        # s: [Batch, Input, Channel]
-        # t: [Batch, Input, Channel]
-        s = s.permute(0,2,1) # [Batch, Channel, Input]
-        t = t.permute(0,2,1) # [Batch, Channel, Input]
+        s = s.permute(0,2,1) # [B, C, seq_len]
+        t = t.permute(0,2,1) # [B, C, seq_len]
 
         B = s.shape[0]
         C = s.shape[1]
         I = s.shape[2]
         t = torch.reshape(t, (B*C, I))
 
-        # Seasonal Stream: Conv1d + Pooling
+        # Conv1d + Pooling
         s_conv = self.conv1d(s)  # [B, C, seq_len]
         s_pool = self.pool(s_conv)  # [B, C, seq_len]
         s_base = s_pool
 
+        # Attention channel nhiều lớp
         s_channel = s.permute(0, 2, 1)  # [B, seq_len, C]
-        channel_attn_out, _ = self.channel_attn(s_channel, s_channel, s_channel)  # [B, seq_len, C]
-        channel_attn_out = channel_attn_out.permute(0, 2, 1)
-        
+        for attn in self.channel_attn_layers:
+            s_channel, _ = attn(s_channel, s_channel, s_channel)
+        channel_attn_out = s_channel.permute(0, 2, 1)  # [B, C, seq_len]
+
+        # Attention subsequence nhiều lớp
         s_subseq = s.reshape(-1, self.seg_num_x, self.period_len) # [B*C, seg_num_x, period_len]
-        subseq_attn_out, _ = self.subseq_attn(s_subseq, s_subseq, s_subseq)  # [B*C, seg_num_x, period_len]
-        subseq_attn_out = subseq_attn_out.reshape(B, C, self.seg_num_x * self.period_len)
+        for attn in self.subseq_attn_layers:
+            s_subseq, _ = attn(s_subseq, s_subseq, s_subseq)
+        subseq_attn_out = s_subseq.reshape(B, C, self.seg_num_x * self.period_len)
 
         fusion = s_base + channel_attn_out + subseq_attn_out + s
-
 
         fusion_subseq = fusion.reshape(-1, self.seg_num_x, self.period_len) # [B*C, seg_num_x, period_len]
         fft_out = self.fft_layer(fusion_subseq)
