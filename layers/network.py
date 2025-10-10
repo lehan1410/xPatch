@@ -110,7 +110,7 @@ class Network(nn.Module):
         t = torch.reshape(t, (B*C, I))
 
         # Seasonal Stream: Conv1d + Pooling
-        s_conv = self.conv1d(s)  # [B, num_channel, seq_len]
+        s_conv = self.causal_conv(s)  # [B, num_channel, seq_len]
         s_pool = self.pool(s_conv)  # [B, num_channel, seq_len]
         s = s_pool + s
 
