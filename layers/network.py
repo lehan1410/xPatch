@@ -17,6 +17,11 @@ class Network(nn.Module):
             embed_dim=self.enc_in, num_heads=1, batch_first=True
         )
 
+        # Attention theo chiều thời gian (pattern thời gian)
+        self.time_attn = nn.MultiheadAttention(
+            embed_dim=self.seq_len, num_heads=1, batch_first=True
+        )
+
         # Linear pipeline cho seasonal
         self.input_proj = nn.Linear(self.seq_len, self.d_model)
         self.model = nn.Sequential(
@@ -46,27 +51,31 @@ class Network(nn.Module):
         B, C, I = s.shape
         t_trend = torch.reshape(t, (B*C, I))
 
-        # Seasonal Stream: chỉ attention các channel
+        # Seasonal Stream: attention các channel
         s_channel = s.permute(0, 2, 1)  # [B, seq_len, C]
         channel_attn_out, _ = self.channel_attn(s_channel, s_channel, s_channel)  # [B, seq_len, C]
         s_channel = channel_attn_out.permute(0, 2, 1)  # [B, C, seq_len]
 
+        # Attention theo chiều thời gian (pattern thời gian)
+        # Đưa về [B*C, 1, seq_len] để dùng attention
+        s_time_in = s_channel.reshape(B*C, 1, self.seq_len)
+        time_attn_out, _ = self.time_attn(s_time_in, s_time_in, s_time_in)  # [B*C, 1, seq_len]
+        time_attn_out = time_attn_out.squeeze(1)  # [B*C, seq_len]
+
         # Linear pipeline cho seasonal
-        seasonal = s_channel.reshape(B*C, self.seq_len)  # [B*C, seq_len]
-        seasonal = self.input_proj(seasonal)             # [B*C, d_model]
-        seasonal = self.model(seasonal)                  # [B*C, d_model]
-        seasonal = self.output_proj(seasonal)            # [B*C, pred_len]
+        seasonal = self.input_proj(time_attn_out)             # [B*C, d_model]
+        seasonal = self.model(seasonal)                       # [B*C, d_model]
+        seasonal = self.output_proj(seasonal)                 # [B*C, pred_len]
         seasonal = seasonal.reshape(B, C, self.pred_len)
-        seasonal = seasonal.permute(0, 2, 1)             # [B, pred_len, C]
+        seasonal = seasonal.permute(0, 2, 1)                  # [B, pred_len, C]
 
         # Trend Stream: thêm residual
-        t_trend_origin = t_trend.clone()                 # [B*C, seq_len]
+        t_trend_origin = t_trend.clone()                      # [B*C, seq_len]
         t_trend = self.fc5(t_trend)
         t_trend = self.gelu1(t_trend)
         t_trend = self.ln1(t_trend)
         t_trend = self.fc7(t_trend)
         t_trend = self.fc8(t_trend)
-        # Residual: cộng đầu vào gốc (sau khi resize cho đúng shape)
         t_trend = t_trend + t_trend_origin[:, :self.pred_len]
         t_trend = torch.reshape(t_trend, (B, C, self.pred_len))
         t_trend = t_trend.permute(0,2,1) # [B, pred_len, C]
