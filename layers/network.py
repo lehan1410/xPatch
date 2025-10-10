@@ -34,7 +34,7 @@ class Network(nn.Module):
         )
 
         self.channel_attn = nn.MultiheadAttention(
-            embed_dim=self.enc_in, num_heads=2, batch_first=True
+            embed_dim=self.enc_in, num_heads=1, batch_first=True
         )
 
         # FFT Layer tăng khả năng biểu diễn
