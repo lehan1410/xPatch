@@ -43,8 +43,7 @@ class temporal_attn_block(nn.Module):
         attn_out = attn_out + x_proj
         res_2 = self.attn_norm(attn_out.transpose(1,2)).transpose(1,2)  # [B, seq_len, d_model]
         res_2 = self.fft_norm(self.fft_layer(res_2) + res_2)
-        out = self.proj_out(res_2)  # [B, seq_len, enc_in]
-        out = out.permute(0, 2, 1)  # [B, enc_in, seq_len]
+        out = self.proj_out(res_2)  # [B, seq_len, enc_in]  
         return out
 
 class Network(nn.Module):
@@ -117,7 +116,7 @@ class Network(nn.Module):
         s_temp = s  # [B, seq_len, enc_in]
         for i in range(self.n_layers):
             s_temp = self.temporal_attn_blocks[i](s_temp)  # [B, enc_in, seq_len]
-        attn_temp = s_temp
+        attn_temp = s_temp.permute(0, 2, 1)
 
         # Conv branch (depthwise)
         s = s.permute(0, 2, 1)  # [B, Channel, Input]
