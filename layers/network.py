@@ -20,14 +20,12 @@ class CausalConvBlock(nn.Module):
 class MixerBlock(nn.Module):
     def __init__(self, num_subseq, period_len, num_channel, d_model, dropout=0.1, tfactor=2, dfactor=2):
         super().__init__()
-        # Token mixing (trộn giữa các subsequence)
         self.token_mixer = nn.Sequential(
             nn.Linear(num_subseq, num_subseq * tfactor),
             nn.GELU(),
             nn.Dropout(dropout),
             nn.Linear(num_subseq * tfactor, num_subseq)
         )
-        # Channel mixing (trộn giữa các channel)
         self.channel_mixer = nn.Sequential(
             nn.Linear(num_channel, num_channel * dfactor),
             nn.GELU(),
@@ -41,20 +39,17 @@ class MixerBlock(nn.Module):
         # x: [B, num_channel, period_len, num_subseq]
         x = self.norm1(x)
         # Token mixing: trộn giữa các subsequence
-        # Đưa num_subseq về cuối
-        x_token = x.permute(0, 1, 2, 3)  # [B, num_channel, period_len, num_subseq]
-        x_token = x_token.reshape(-1, x_token.shape[-1])  # [B * num_channel * period_len, num_subseq]
-        x_token = self.token_mixer(x_token)               # [B * num_channel * period_len, num_subseq]
-        x_token = x_token.reshape(x.shape)                # [B, num_channel, period_len, num_subseq]
+        x_token = x.reshape(-1, x.shape[-1])  # [B * num_channel * period_len, num_subseq]
+        x_token = self.token_mixer(x_token)
+        x_token = x_token.reshape(x.shape)    # [B, num_channel, period_len, num_subseq]
         x = x + x_token
         x = self.norm2(x)
         # Channel mixing: trộn giữa các channel
-        # Đưa num_channel về cuối
-        x_channel = x.permute(0, 3, 2, 1)                # [B, num_subseq, period_len, num_channel]
+        x_channel = x.permute(0, 3, 2, 1)    # [B, num_subseq, period_len, num_channel]
         x_channel = x_channel.reshape(-1, x_channel.shape[-1])  # [B * num_subseq * period_len, num_channel]
-        x_channel = self.channel_mixer(x_channel)               # [B * num_subseq * period_len, num_channel]
+        x_channel = self.channel_mixer(x_channel)
         x_channel = x_channel.reshape(x.shape[0], x.shape[3], x.shape[2], x.shape[1])  # [B, num_subseq, period_len, num_channel]
-        x_channel = x_channel.permute(0, 3, 2, 1)        # [B, num_channel, period_len, num_subseq]
+        x_channel = x_channel.permute(0, 3, 2, 1)  # [B, num_channel, period_len, num_subseq]
         x = x + x_channel
         return x
 
@@ -73,14 +68,12 @@ class Network(nn.Module):
 
         self.causal_conv = CausalConvBlock(d_model=self.num_channel, kernel_size=5, dropout=dropout)
 
-
         self.pool = nn.AvgPool1d(
             kernel_size=1 + 2 * (self.period_len // 2),
             stride=1,
             padding=self.period_len // 2
         )
 
-        # Mixer block để trộn thông tin giữa subsequence và channel
         self.mixer = MixerBlock(
             num_subseq=self.num_subseq_x,
             period_len=self.period_len,
@@ -91,10 +84,11 @@ class Network(nn.Module):
             dfactor=dfactor
         )
 
+        # Sửa lại MLP để nhận period_len làm input
         self.mlp = nn.Sequential(
-            nn.Linear(self.num_subseq_x, self.d_model * 2),
+            nn.Linear(self.period_len, self.d_model * 2),
             nn.GELU(),
-            nn.Linear(self.d_model * 2, self.num_subseq_y)
+            nn.Linear(self.d_model * 2, self.period_len)
         )
 
         # Linear Stream
@@ -115,9 +109,9 @@ class Network(nn.Module):
         I = s.shape[2]
         t = torch.reshape(t, (B*C, I))
 
-        # Seasonal Stream: Conv1d + Pooling
+        # Seasonal Stream: CausalConvBlock + Pooling
         s_conv = self.causal_conv(s)  # [B, num_channel, seq_len]
-        s_pool = self.pool(s_conv)  # [B, num_channel, seq_len]
+        s_pool = self.pool(s_conv)    # [B, num_channel, seq_len]
         s = s_pool + s
 
         # Chia thành các subsequence
@@ -127,11 +121,12 @@ class Network(nn.Module):
         # Mixer block: trộn thông tin giữa subsequence và channel
         s_mixed = self.mixer(s_subseq)   # [B, num_channel, period_len, num_subseq]
 
-        # Đưa về dạng [B*C, num_subseq, period_len] để vào MLP
-        s_mixed = s_mixed.permute(0, 1, 3, 2).reshape(-1, self.num_subseq_x, self.period_len)
+        # Đưa về dạng [B*C*self.num_subseq_x, period_len] để vào MLP
+        s_mixed = s_mixed.permute(0, 1, 3, 2).reshape(-1, self.period_len)
         y = self.mlp(s_mixed)
-        y = y.permute(0, 2, 1).reshape(B, self.num_channel, self.pred_len)
-        y = y.permute(0, 2, 1)
+        y = y.reshape(B, C, self.num_subseq_x, self.period_len)
+        y = y.permute(0, 1, 3, 2).reshape(B, self.num_channel, self.pred_len)
+        y = y.permute(0, 2, 1) # [B, pred_len, num_channel]
 
         # Linear Stream
         t = self.fc5(t)
