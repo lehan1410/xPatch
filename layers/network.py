@@ -9,8 +9,8 @@ class Network(nn.Module):
         self.pred_len = pred_len
         self.seq_len = seq_len
         self.enc_in  = c_in
-        self.period_len = 24
-        self.d_model = 128
+        self.period_len = period_len
+        self.d_model = d_model
 
         self.seg_num_x = self.seq_len // self.period_len
         self.seg_num_y = self.pred_len // self.period_len
@@ -28,21 +28,12 @@ class Network(nn.Module):
             padding=self.period_len // 2
         )
 
-        # Attention giữa các subsequence
         self.subseq_attn = nn.MultiheadAttention(
-            embed_dim=self.period_len, num_heads=2, batch_first=True
+            embed_dim=self.period_len, num_heads=1, batch_first=True
         )
 
         self.channel_attn = nn.MultiheadAttention(
             embed_dim=self.enc_in, num_heads=1, batch_first=True
-        )
-
-        # FFT Layer tăng khả năng biểu diễn
-        self.fft_layer = nn.Sequential(
-            nn.Linear(self.period_len, int(self.period_len * 2)),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(int(self.period_len * 2), self.period_len),
         )
 
         self.mlp = nn.Sequential(
@@ -82,13 +73,9 @@ class Network(nn.Module):
         # Attention giữa các subsequence
         attn_out, _ = self.subseq_attn(s_subseq, s_subseq, s_subseq)  # [B*C, seg_num_x, period_len]
 
-        # FFT Layer trên từng subsequence
-        fft_out = self.fft_layer(attn_out)  # [B*C, seg_num_x, period_len]
-
         # Đưa vào MLP
-        mlp_in = fft_out.permute(0, 2, 1) 
+        mlp_in = attn_out.permute(0, 2, 1) 
 
-        # Đưa vào MLP
         y = self.mlp(mlp_in)
         y = y.permute(0, 2, 1).reshape(B, self.enc_in, self.pred_len)
         y = y.permute(0, 2, 1)
