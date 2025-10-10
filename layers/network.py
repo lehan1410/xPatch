@@ -92,6 +92,9 @@ class Network(nn.Module):
             nn.Linear(self.d_model * 2, self.seg_num_y)
         )
 
+        self.mlp[0].weight = nn.Parameter((1 / d_model) * torch.ones([self.d_model * 2, self.seg_num_x]))
+        self.mlp[2].weight = nn.Parameter((1 / d_model) * torch.ones([self.seg_num_y, self.d_model * 2]))
+
         self.out_proj = nn.Linear(self.pred_len, self.enc_in)
 
         # Linear Stream
@@ -100,6 +103,11 @@ class Network(nn.Module):
         self.ln1 = nn.LayerNorm(pred_len * 2)
         self.fc7 = nn.Linear(pred_len * 2, pred_len)
         self.fc8 = nn.Linear(pred_len, pred_len)
+
+        self.fc5.weight = nn.Parameter((1 / d_model) * torch.ones([pred_len * 2, seq_len]))
+        self.fc7.weight = nn.Parameter((1 / d_model) * torch.ones([pred_len, pred_len * 2]))
+        self.fc8.weight = nn.Parameter((1 / d_model) * torch.ones([pred_len, pred_len]))
+
 
     def forward(self, s, t):
         # s: [Batch, Input, Channel]
