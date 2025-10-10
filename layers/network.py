@@ -72,23 +72,22 @@ class Network(nn.Module):
         # Seasonal Stream: Conv1d + Pooling
         s_conv = self.conv1d(s)  # [B, C, seq_len]
         s_pool = self.pool(s_conv)  # [B, C, seq_len]
-        s = s_pool + s
+        s_base = s_pool
+
         s_channel = s.permute(0, 2, 1)  # [B, seq_len, C]
         channel_attn_out, _ = self.channel_attn(s_channel, s_channel, s_channel)  # [B, seq_len, C]
-        s_channel = channel_attn_out.permute(0, 2, 1) # [B*C, seg_num_x, period_len]
+        channel_attn_out = channel_attn_out.permute(0, 2, 1)
+        
+        s_subseq = s.reshape(-1, self.seg_num_x, self.period_len) # [B*C, seg_num_x, period_len]
+        subseq_attn_out, _ = self.subseq_attn(s_subseq, s_subseq, s_subseq)  # [B*C, seg_num_x, period_len]
+        subseq_attn_out = subseq_attn_out.reshape(B, C, self.seg_num_x * self.period_len)
 
-        s_subseq = s_channel.reshape(-1, self.seg_num_x, self.period_len) # [B*C, seg_num_x, period_len]
+        fusion = s_base + channel_attn_out + subseq_attn_out + s
 
-        # Attention giữa các subsequence
-        attn_out, _ = self.subseq_attn(s_subseq, s_subseq, s_subseq)  # [B*C, seg_num_x, period_len]
 
-        # FFT Layer trên từng subsequence
-        fft_out = self.fft_layer(attn_out)  # [B*C, seg_num_x, period_len]
-
-        # Đưa vào MLP
-        mlp_in = fft_out.permute(0, 2, 1) 
-
-        # Đưa vào MLP
+        fusion_subseq = fusion.reshape(-1, self.seg_num_x, self.period_len) # [B*C, seg_num_x, period_len]
+        fft_out = self.fft_layer(fusion_subseq)
+        mlp_in = fft_out.permute(0, 2, 1)
         y = self.mlp(mlp_in)
         y = y.permute(0, 2, 1).reshape(B, self.enc_in, self.pred_len)
         y = y.permute(0, 2, 1)
@@ -100,6 +99,6 @@ class Network(nn.Module):
         t = self.fc7(t)
         t = self.fc8(t)
         t = torch.reshape(t, (B, C, self.pred_len))
-        t = t.permute(0,2,1) # [Batch, Output, Channel] = [B, pred_len, C]
+        t = t.permute(0,2,1)
 
         return t + y
