@@ -73,22 +73,22 @@ class Network(nn.Module):
         s_conv = self.conv1d(s)  # [B, C, seq_len]
         s_pool = self.pool(s_conv)  # [B, C, seq_len]
         s = s_pool + s
-        s = s.reshape(-1, self.seg_num_x, self.period_len) # [B*C, seg_num_x, period_len]
+        s_channel = s.permute(0, 2, 1)  # [B, seq_len, C]
+        channel_attn_out, _ = self.channel_attn(s_channel, s_channel, s_channel)  # [B, seq_len, C]
+        s_channel = channel_attn_out.permute(0, 2, 1) # [B*C, seg_num_x, period_len]
+
+        s_subseq = s_channel.reshape(-1, self.seg_num_x, self.period_len) # [B*C, seg_num_x, period_len]
 
         # Attention giữa các subsequence
-        attn_out, _ = self.subseq_attn(s, s, s)  # [B*C, seg_num_x, period_len]
+        attn_out, _ = self.subseq_attn(s_subseq, s_subseq, s_subseq)  # [B*C, seg_num_x, period_len]
 
         # FFT Layer trên từng subsequence
         fft_out = self.fft_layer(attn_out)  # [B*C, seg_num_x, period_len]
 
-        fft_out_channel = fft_out.reshape(B, C, self.seg_num_x, self.period_len).permute(0, 2, 3, 1) # [B, seg_num_x, period_len, C]
-        fft_out_channel = fft_out_channel.reshape(-1, self.period_len, C) # [B*seg_num_x, period_len, C]
-        channel_attn_out, _ = self.channel_attn(fft_out_channel, fft_out_channel, fft_out_channel) # [B*seg_num_x, period_len, C]
-        channel_attn_out = channel_attn_out.reshape(B, self.seg_num_x, self.period_len, C).permute(0, 3, 1, 2) # [B, C, seg_num_x, period_len]
-        channel_attn_out = channel_attn_out.reshape(B*C, self.seg_num_x, self.period_len)
+        # Đưa vào MLP
+        mlp_in = fft_out.permute(0, 2, 1) 
 
         # Đưa vào MLP
-        mlp_in = channel_attn_out.permute(0, 2, 1)  # [B*C, period_len, seg_num_x]
         y = self.mlp(mlp_in)
         y = y.permute(0, 2, 1).reshape(B, self.enc_in, self.pred_len)
         y = y.permute(0, 2, 1)
