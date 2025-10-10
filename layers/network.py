@@ -13,6 +13,7 @@ class Network(nn.Module):
         self.dropout = dropout
 
         self.num_subseq = self.pred_len // self.period_len
+        self.num_subseq_x = self.seq_len // self.period_len
 
         # Attention cho channel
         self.channel_attn = nn.MultiheadAttention(
@@ -38,8 +39,6 @@ class Network(nn.Module):
         self.fc7 = nn.Linear(pred_len * 2, pred_len)
         self.fc8 = nn.Linear(pred_len, pred_len)
 
-        self.dropout_layer = nn.Dropout(self.dropout)
-
     def forward(self, s, t):
         # s: [Batch, Input, Channel]
         # t: [Batch, Input, Channel]
@@ -54,8 +53,12 @@ class Network(nn.Module):
         channel_attn_out, _ = self.channel_attn(s_channel, s_channel, s_channel)  # [B, seq_len, C]
         s_channel = channel_attn_out.permute(0, 2, 1)  # [B, C, seq_len]
 
-        # Chia thành các subsequence
-        s_subseq = s_channel.reshape(B*C, self.num_subseq, self.period_len)  # [B*C, num_subseq, period_len]
+        # Chia thành các subsequence từ đầu vào
+        num_subseq_x = self.seq_len // self.period_len
+        s_subseq_all = s_channel.reshape(B*C, num_subseq_x, self.period_len)  # [B*C, num_subseq_x, period_len]
+        # Lấy các subsequence cuối cùng để dự báo
+        start_idx = num_subseq_x - self.num_subseq
+        s_subseq = s_subseq_all[:, start_idx:, :]  # [B*C, num_subseq, period_len]
 
         seasonal_subseq = []
         for i in range(self.num_subseq):
