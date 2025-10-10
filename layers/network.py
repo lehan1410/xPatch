@@ -5,44 +5,32 @@ class Network(nn.Module):
     def __init__(self, seq_len, pred_len, c_in, period_len, d_model, dropout=0.1):
         super(Network, self).__init__()
 
-        # Parameters
         self.pred_len = pred_len
         self.seq_len = seq_len
         self.enc_in  = c_in
         self.period_len = period_len
         self.d_model = d_model
+        self.dropout = dropout
 
-        self.seg_num_x = self.seq_len // self.period_len
-        self.seg_num_y = self.pred_len // self.period_len
-
-        self.conv1d = nn.Conv1d(
-            in_channels=self.enc_in, out_channels=self.enc_in,
-            kernel_size=1 + 2 * (self.period_len // 2),
-            stride=1, padding=self.period_len // 2,
-            padding_mode="zeros", bias=False, groups=self.enc_in
-        )
-
-        self.pool = nn.AvgPool1d(
-            kernel_size=1 + 2 * (self.period_len // 2),
-            stride=1,
-            padding=self.period_len // 2
-        )
-
-        self.subseq_attn = nn.MultiheadAttention(
-            embed_dim=self.period_len, num_heads=1, batch_first=True
-        )
-
+        # Attention cho channel
         self.channel_attn = nn.MultiheadAttention(
             embed_dim=self.enc_in, num_heads=1, batch_first=True
         )
 
-        self.mlp = nn.Sequential(
-            nn.Linear(self.seg_num_x, self.d_model * 2),
+        # Linear pipeline cho seasonal
+        self.input_proj = nn.Linear(self.seq_len, self.d_model)
+        self.model = nn.Sequential(
+            nn.Linear(self.d_model, self.d_model),
             nn.GELU(),
-            nn.Linear(self.d_model * 2, self.seg_num_y)
+            nn.Linear(self.d_model, self.d_model),
+            nn.GELU(),
+        )
+        self.output_proj = nn.Sequential(
+            nn.Dropout(self.dropout),
+            nn.Linear(self.d_model, self.pred_len)
         )
 
-        # Linear Stream
+        # Linear Stream cho trend
         self.fc5 = nn.Linear(seq_len, pred_len * 2)
         self.gelu1 = nn.GELU()
         self.ln1 = nn.LayerNorm(pred_len * 2)
@@ -55,38 +43,32 @@ class Network(nn.Module):
         s = s.permute(0,2,1) # [Batch, Channel, Input]
         t = t.permute(0,2,1) # [Batch, Channel, Input]
 
-        B = s.shape[0]
-        C = s.shape[1]
-        I = s.shape[2]
-        t = torch.reshape(t, (B*C, I))
+        B, C, I = s.shape
+        t_trend = torch.reshape(t, (B*C, I))
 
-        # Seasonal Stream: Conv1d + Pooling
-        s_conv = self.conv1d(s)  # [B, C, seq_len]
-        s_pool = self.pool(s_conv)  # [B, C, seq_len]
-        s = s_pool + s
+        # Seasonal Stream: chỉ attention các channel
         s_channel = s.permute(0, 2, 1)  # [B, seq_len, C]
         channel_attn_out, _ = self.channel_attn(s_channel, s_channel, s_channel)  # [B, seq_len, C]
-        s_channel = channel_attn_out.permute(0, 2, 1) # [B*C, seg_num_x, period_len]
+        s_channel = channel_attn_out.permute(0, 2, 1)  # [B, C, seq_len]
 
-        s_subseq = s_channel.reshape(-1, self.seg_num_x, self.period_len) # [B*C, seg_num_x, period_len]
+        # Linear pipeline cho seasonal
+        seasonal = s_channel.reshape(B*C, self.seq_len)  # [B*C, seq_len]
+        seasonal = self.input_proj(seasonal)             # [B*C, d_model]
+        seasonal = self.model(seasonal)                  # [B*C, d_model]
+        seasonal = self.output_proj(seasonal)            # [B*C, pred_len]
+        seasonal = seasonal.reshape(B, C, self.pred_len)
+        seasonal = seasonal.permute(0, 2, 1)             # [B, pred_len, C]
 
-        # Attention giữa các subsequence
-        attn_out, _ = self.subseq_attn(s_subseq, s_subseq, s_subseq)  # [B*C, seg_num_x, period_len]
+        # Trend Stream: thêm residual
+        t_trend_origin = t_trend.clone()                 # [B*C, seq_len]
+        t_trend = self.fc5(t_trend)
+        t_trend = self.gelu1(t_trend)
+        t_trend = self.ln1(t_trend)
+        t_trend = self.fc7(t_trend)
+        t_trend = self.fc8(t_trend)
+        # Residual: cộng đầu vào gốc (sau khi resize cho đúng shape)
+        t_trend = t_trend + t_trend_origin[:, :self.pred_len]
+        t_trend = torch.reshape(t_trend, (B, C, self.pred_len))
+        t_trend = t_trend.permute(0,2,1) # [B, pred_len, C]
 
-        # Đưa vào MLP
-        mlp_in = attn_out.permute(0, 2, 1) 
-
-        y = self.mlp(mlp_in)
-        y = y.permute(0, 2, 1).reshape(B, self.enc_in, self.pred_len)
-        y = y.permute(0, 2, 1)
-
-        # Linear Stream
-        t = self.fc5(t)
-        t = self.gelu1(t)
-        t = self.ln1(t)
-        t = self.fc7(t)
-        t = self.fc8(t)
-        t = torch.reshape(t, (B, C, self.pred_len))
-        t = t.permute(0,2,1) # [Batch, Output, Channel] = [B, pred_len, C]
-
-        return t + y
+        return t_trend + seasonal
