@@ -41,14 +41,20 @@ class MixerBlock(nn.Module):
         # x: [B, num_channel, period_len, num_subseq]
         x = self.norm1(x)
         # Token mixing: trộn giữa các subsequence
-        x_token = x.transpose(1, 3)  # [B, num_subseq, period_len, num_channel]
-        x_token = self.token_mixer(x_token)
-        x_token = x_token.transpose(1, 3)  # [B, num_channel, period_len, num_subseq]
+        # Đưa num_subseq về cuối
+        x_token = x.permute(0, 1, 2, 3)  # [B, num_channel, period_len, num_subseq]
+        x_token = x_token.reshape(-1, x_token.shape[-1])  # [B * num_channel * period_len, num_subseq]
+        x_token = self.token_mixer(x_token)               # [B * num_channel * period_len, num_subseq]
+        x_token = x_token.reshape(x.shape)                # [B, num_channel, period_len, num_subseq]
         x = x + x_token
         x = self.norm2(x)
         # Channel mixing: trộn giữa các channel
-        x_channel = self.channel_mixer(x.transpose(2, 3))  # [B, num_channel, num_subseq, period_len]
-        x_channel = x_channel.transpose(2, 3)  # [B, num_channel, period_len, num_subseq]
+        # Đưa num_channel về cuối
+        x_channel = x.permute(0, 3, 2, 1)                # [B, num_subseq, period_len, num_channel]
+        x_channel = x_channel.reshape(-1, x_channel.shape[-1])  # [B * num_subseq * period_len, num_channel]
+        x_channel = self.channel_mixer(x_channel)               # [B * num_subseq * period_len, num_channel]
+        x_channel = x_channel.reshape(x.shape[0], x.shape[3], x.shape[2], x.shape[1])  # [B, num_subseq, period_len, num_channel]
+        x_channel = x_channel.permute(0, 3, 2, 1)        # [B, num_channel, period_len, num_subseq]
         x = x + x_channel
         return x
 
