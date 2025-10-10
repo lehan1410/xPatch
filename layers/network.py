@@ -21,6 +21,32 @@ class channel_attn_block(nn.Module):
         res_2 = self.fft_norm(self.fft_layer(res_2) + res_2)
         return res_2
 
+class temporal_attn_block(nn.Module):
+    def __init__(self, enc_in, d_model, dropout):
+        super(temporal_attn_block, self).__init__()
+        self.proj_in = nn.Linear(enc_in, d_model)
+        self.attn_norm = nn.BatchNorm1d(d_model)
+        self.fft_norm = nn.LayerNorm(d_model)
+        self.temporal_attn = nn.MultiheadAttention(d_model, num_heads=1, batch_first=True)
+        self.fft_layer = nn.Sequential(
+            nn.Linear(d_model, d_model * 2),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(d_model * 2, d_model),
+        )
+        self.proj_out = nn.Linear(d_model, enc_in)
+
+    def forward(self, x):
+        # x: [B, seq_len, enc_in]
+        x_proj = self.proj_in(x)  # [B, seq_len, d_model]
+        attn_out, _ = self.temporal_attn(x_proj, x_proj, x_proj)  # [B, seq_len, d_model]
+        attn_out = attn_out + x_proj
+        res_2 = self.attn_norm(attn_out.transpose(1,2)).transpose(1,2)  # [B, seq_len, d_model]
+        res_2 = self.fft_norm(self.fft_layer(res_2) + res_2)
+        out = self.proj_out(res_2)  # [B, seq_len, enc_in]
+        out = out.permute(0, 2, 1)  # [B, enc_in, seq_len]
+        return out
+
 class Network(nn.Module):
     def __init__(self, seq_len, pred_len, c_in, period_len, d_model, dropout=0.1, n_layers=2):
         super(Network, self).__init__()
@@ -38,6 +64,11 @@ class Network(nn.Module):
         self.channel_attn_blocks = nn.ModuleList([
             channel_attn_block(self.enc_in, self.d_model, dropout)
             for _ in range(self.n_layers)
+        ])
+
+        self.temporal_attn_blocks = nn.ModuleList([
+            temporal_attn_block(c_in, d_model, dropout)
+            for _ in range(n_layers)
         ])
 
         self.conv1d = nn.Conv1d(
@@ -83,13 +114,18 @@ class Network(nn.Module):
             s_proj = self.channel_attn_blocks[i](s_proj)  # [B, Channel, d_model]
         attn_seq = self.to_seq(s_proj)  # [B, Channel, seq_len]
 
+        s_temp = s  # [B, seq_len, enc_in]
+        for i in range(self.n_layers):
+            s_temp = self.temporal_attn_blocks[i](s_temp)  # [B, enc_in, seq_len]
+        attn_temp = s_temp
+
         # Conv branch (depthwise)
         s = s.permute(0, 2, 1)  # [B, Channel, Input]
         s_conv = self.conv1d(s)  # [B, C, seq_len]
         s_pool = self.pool(s_conv)  # [B, C, seq_len]
 
         # Tổng hợp đặc trưng attention và conv
-        fused_seq = attn_seq + s_pool + s  # [B, Channel, seq_len]
+        fused_seq = attn_seq + attn_temp + s_pool + s  # [B, Channel, seq_len]
 
         # Reshape để dùng MLP như yêu cầu
         fused_seq = fused_seq.reshape(-1, self.seg_num_x, self.period_len).permute(0, 2, 1)  # [B*C, period_len, seg_num_x]
