@@ -5,7 +5,6 @@ class Network(nn.Module):
     def __init__(self, seq_len, pred_len, c_in, period_len, d_model):
         super(Network, self).__init__()
 
-        # Parameters
         self.pred_len = pred_len
         self.seq_len = seq_len
         self.enc_in  = c_in
@@ -79,12 +78,15 @@ class Network(nn.Module):
         s_subseq = self.subseq_mixer(s)  # [B, C, seg_num_x]
 
         # Trộn channel (theo chiều channel)
-        s_channel = s_subseq.permute(0, 2, 1)  # [B, seg_num_x, C]
+        s_channel = s.permute(0, 2, 1)  # [B, seg_num_x, C]
         s_channel = self.channel_mixer(s_channel)  # [B, seg_num_x, C]
         s_channel = s_channel.permute(0, 2, 1)  # [B, C, seg_num_x]
 
-        # Đưa vào MLP
-        y = self.mlp(s_channel)  # [B, C, seg_num_y]
+        # Cộng đặc trưng subsequence và channel
+        s_fused = s_subseq + s_channel  # [B, C, seg_num_x]
+
+        # Đưa qua MLP như cũ
+        y = self.mlp(s_fused)  # [B, C, seg_num_y]
         y = y.reshape(B, C, self.seg_num_y * self.period_len)[:, :, :self.pred_len]  # [B, C, pred_len]
         y = y.permute(0, 2, 1)  # [B, pred_len, C]
 
