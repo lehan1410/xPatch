@@ -37,7 +37,7 @@ class Network(nn.Module):
         self.channel_proj = nn.Linear(self.seq_len, self.d_model)
         self.channel_attn_blocks = nn.ModuleList([
             channel_attn_block(self.enc_in, self.d_model, dropout)
-            for _ in range(3))
+            for _ in range(3)
         ])
 
         self.conv1d = nn.Conv1d(
