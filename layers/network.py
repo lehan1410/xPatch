@@ -1,26 +1,72 @@
 import torch
 from torch import nn
 
+class CausalConvBlock(nn.Module):
+    def __init__(self, d_model, kernel_size=5, dropout=0.0):
+        super(CausalConvBlock, self).__init__()
+        module_list = [
+            nn.ReplicationPad1d((kernel_size - 1, kernel_size - 1)),
+            nn.Conv1d(d_model, d_model, kernel_size=kernel_size),
+            nn.LeakyReLU(negative_slope=0.01, inplace=True),
+            nn.Dropout(dropout),
+            nn.Conv1d(d_model, d_model, kernel_size=kernel_size),
+            nn.Tanh()
+        ]
+        self.causal_conv = nn.Sequential(*module_list)
+
+    def forward(self, x):
+        return self.causal_conv(x)
+
+class MixerBlock(nn.Module):
+    def __init__(self, num_subseq, period_len, num_channel, d_model, dropout=0.1, tfactor=2, dfactor=2):
+        super().__init__()
+        # Token mixing (trộn giữa các subsequence)
+        self.token_mixer = nn.Sequential(
+            nn.Linear(num_subseq, num_subseq * tfactor),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(num_subseq * tfactor, num_subseq)
+        )
+        # Channel mixing (trộn giữa các channel)
+        self.channel_mixer = nn.Sequential(
+            nn.Linear(num_channel, num_channel * dfactor),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(num_channel * dfactor, num_channel)
+        )
+        self.norm1 = nn.LayerNorm([period_len, num_subseq])
+        self.norm2 = nn.LayerNorm([period_len, num_subseq])
+
+    def forward(self, x):
+        # x: [B, num_channel, period_len, num_subseq]
+        x = self.norm1(x)
+        # Token mixing: trộn giữa các subsequence
+        x_token = x.transpose(1, 3)  # [B, num_subseq, period_len, num_channel]
+        x_token = self.token_mixer(x_token)
+        x_token = x_token.transpose(1, 3)  # [B, num_channel, period_len, num_subseq]
+        x = x + x_token
+        x = self.norm2(x)
+        # Channel mixing: trộn giữa các channel
+        x_channel = self.channel_mixer(x.transpose(2, 3))  # [B, num_channel, num_subseq, period_len]
+        x_channel = x_channel.transpose(2, 3)  # [B, num_channel, period_len, num_subseq]
+        x = x + x_channel
+        return x
+
 class Network(nn.Module):
-    def __init__(self, seq_len, pred_len, c_in, period_len, d_model, dropout=0.1, n_attn=2):
+    def __init__(self, seq_len, pred_len, num_channel, period_len, d_model, dropout=0.1, tfactor=2, dfactor=2):
         super(Network, self).__init__()
 
-        # Parameters
         self.pred_len = pred_len
         self.seq_len = seq_len
-        self.enc_in  = c_in
-        self.period_len = 24
-        self.d_model = 128
+        self.num_channel = num_channel
+        self.period_len = period_len
+        self.d_model = d_model
 
-        self.seg_num_x = self.seq_len // self.period_len
-        self.seg_num_y = self.pred_len // self.period_len
+        self.num_subseq_x = self.seq_len // self.period_len
+        self.num_subseq_y = self.pred_len // self.period_len
 
-        self.conv1d = nn.Conv1d(
-            in_channels=self.enc_in, out_channels=self.enc_in,
-            kernel_size=1 + 2 * (self.period_len // 2),
-            stride=1, padding=self.period_len // 2,
-            padding_mode="zeros", bias=False, groups=self.enc_in
-        )
+        self.causal_conv = CausalConvBlock(d_model=self.num_channel, kernel_size=5, dropout=dropout)
+
 
         self.pool = nn.AvgPool1d(
             kernel_size=1 + 2 * (self.period_len // 2),
@@ -28,33 +74,24 @@ class Network(nn.Module):
             padding=self.period_len // 2
         )
 
-        # Nhiều lớp attention giữa các subsequence
-        self.subseq_attn_layers = nn.ModuleList([
-            nn.MultiheadAttention(
-                embed_dim=self.period_len, num_heads=1, batch_first=True
-            ) for _ in range(n_attn)
-        ])
-
-        # Nhiều lớp attention giữa các channel
-        self.channel_attn_layers = nn.ModuleList([
-            nn.MultiheadAttention(
-                embed_dim=self.enc_in, num_heads=1, batch_first=True
-            ) for _ in range(n_attn)
-        ])
-
-        self.fft_layer = nn.Sequential(
-            nn.Linear(self.period_len, int(self.period_len * 2)),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(int(self.period_len * 2), self.period_len),
+        # Mixer block để trộn thông tin giữa subsequence và channel
+        self.mixer = MixerBlock(
+            num_subseq=self.num_subseq_x,
+            period_len=self.period_len,
+            num_channel=self.num_channel,
+            d_model=self.d_model,
+            dropout=dropout,
+            tfactor=tfactor,
+            dfactor=dfactor
         )
 
         self.mlp = nn.Sequential(
-            nn.Linear(self.seg_num_x, self.d_model * 2),
+            nn.Linear(self.num_subseq_x, self.d_model * 2),
             nn.GELU(),
-            nn.Linear(self.d_model * 2, self.seg_num_y)
+            nn.Linear(self.d_model * 2, self.num_subseq_y)
         )
 
+        # Linear Stream
         self.fc5 = nn.Linear(seq_len, pred_len * 2)
         self.gelu1 = nn.GELU()
         self.ln1 = nn.LayerNorm(pred_len * 2)
@@ -62,38 +99,32 @@ class Network(nn.Module):
         self.fc8 = nn.Linear(pred_len, pred_len)
 
     def forward(self, s, t):
-        s = s.permute(0,2,1) # [B, C, seq_len]
-        t = t.permute(0,2,1) # [B, C, seq_len]
+        # s: [Batch, Input, num_channel]
+        # t: [Batch, Input, num_channel]
+        s = s.permute(0,2,1) # [Batch, num_channel, Input]
+        t = t.permute(0,2,1) # [Batch, num_channel, Input]
 
         B = s.shape[0]
         C = s.shape[1]
         I = s.shape[2]
         t = torch.reshape(t, (B*C, I))
 
-        # Conv1d + Pooling
-        s_conv = self.conv1d(s)  # [B, C, seq_len]
-        s_pool = self.pool(s_conv)  # [B, C, seq_len]
-        s_base = s_pool
+        # Seasonal Stream: Conv1d + Pooling
+        s_conv = self.conv1d(s)  # [B, num_channel, seq_len]
+        s_pool = self.pool(s_conv)  # [B, num_channel, seq_len]
+        s = s_pool + s
 
-        # Attention channel nhiều lớp
-        s_channel = s.permute(0, 2, 1)  # [B, seq_len, C]
-        for attn in self.channel_attn_layers:
-            s_channel, _ = attn(s_channel, s_channel, s_channel)
-        channel_attn_out = s_channel.permute(0, 2, 1)  # [B, C, seq_len]
+        # Chia thành các subsequence
+        s_subseq = s.reshape(B, C, self.num_subseq_x, self.period_len)  # [B, num_channel, num_subseq, period_len]
+        s_subseq = s_subseq.permute(0, 1, 3, 2)  # [B, num_channel, period_len, num_subseq]
 
-        # Attention subsequence nhiều lớp
-        s_subseq = s.reshape(-1, self.seg_num_x, self.period_len) # [B*C, seg_num_x, period_len]
-        for attn in self.subseq_attn_layers:
-            s_subseq, _ = attn(s_subseq, s_subseq, s_subseq)
-        subseq_attn_out = s_subseq.reshape(B, C, self.seg_num_x * self.period_len)
+        # Mixer block: trộn thông tin giữa subsequence và channel
+        s_mixed = self.mixer(s_subseq)   # [B, num_channel, period_len, num_subseq]
 
-        fusion = s_base + channel_attn_out + subseq_attn_out + s
-
-        fusion_subseq = fusion.reshape(-1, self.seg_num_x, self.period_len) # [B*C, seg_num_x, period_len]
-        fft_out = self.fft_layer(fusion_subseq)
-        mlp_in = fft_out.permute(0, 2, 1)
-        y = self.mlp(mlp_in)
-        y = y.permute(0, 2, 1).reshape(B, self.enc_in, self.pred_len)
+        # Đưa về dạng [B*C, num_subseq, period_len] để vào MLP
+        s_mixed = s_mixed.permute(0, 1, 3, 2).reshape(-1, self.num_subseq_x, self.period_len)
+        y = self.mlp(s_mixed)
+        y = y.permute(0, 2, 1).reshape(B, self.num_channel, self.pred_len)
         y = y.permute(0, 2, 1)
 
         # Linear Stream
@@ -103,6 +134,6 @@ class Network(nn.Module):
         t = self.fc7(t)
         t = self.fc8(t)
         t = torch.reshape(t, (B, C, self.pred_len))
-        t = t.permute(0,2,1)
+        t = t.permute(0,2,1) # [Batch, Output, num_channel] = [B, pred_len, num_channel]
 
         return t + y
