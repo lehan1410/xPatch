@@ -1,19 +1,74 @@
 import torch
 from torch import nn
 
-class Network(nn.Module):
-    def __init__(self, seq_len, pred_len, c_in, period_len, d_model):
-        super(Network, self).__init__()
+class channel_attn_block(nn.Module):
+    def __init__(self, enc_in, d_model, dropout):
+        super(channel_attn_block, self).__init__()
+        self.channel_att_norm = nn.BatchNorm1d(enc_in)
+        self.fft_norm = nn.LayerNorm(d_model)
+        self.channel_attn = nn.MultiheadAttention(d_model, num_heads=1, batch_first=True)
+    
+        self.fft_layer = nn.Sequential(
+            nn.Linear(d_model, int(d_model*2)),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(int(d_model*2), d_model),
+        )
+    def forward(self, residual):
+        attn_out, _ = self.channel_attn(residual, residual, residual)  # [B, Channel, d_model]
+        attn_out = attn_out + residual
+        res_2 = self.channel_att_norm(attn_out)
+        res_2 = self.fft_norm(self.fft_layer(res_2) + res_2)
+        return res_2
 
-        # Parameters
+class temporal_attn_block(nn.Module):
+    def __init__(self, enc_in, d_model, dropout):
+        super(temporal_attn_block, self).__init__()
+        self.proj_in = nn.Linear(enc_in, d_model)
+        self.attn_norm = nn.BatchNorm1d(d_model)
+        self.fft_norm = nn.LayerNorm(d_model)
+        self.temporal_attn = nn.MultiheadAttention(d_model, num_heads=1, batch_first=True)
+        self.fft_layer = nn.Sequential(
+            nn.Linear(d_model, d_model * 2),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(d_model * 2, d_model),
+        )
+        self.proj_out = nn.Linear(d_model, enc_in)
+
+    def forward(self, x):
+        # x: [B, seq_len, enc_in]
+        x_proj = self.proj_in(x)  # [B, seq_len, d_model]
+        attn_out, _ = self.temporal_attn(x_proj, x_proj, x_proj)  # [B, seq_len, d_model]
+        attn_out = attn_out + x_proj
+        res_2 = self.attn_norm(attn_out.transpose(1,2)).transpose(1,2)  # [B, seq_len, d_model]
+        res_2 = self.fft_norm(self.fft_layer(res_2) + res_2)
+        out = self.proj_out(res_2)  # [B, seq_len, enc_in]  
+        return out
+
+class Network(nn.Module):
+    def __init__(self, seq_len, pred_len, c_in, period_len, d_model, dropout=0.1, n_layers=3):
+        super(Network, self).__init__()
         self.pred_len = pred_len
         self.seq_len = seq_len
         self.enc_in  = c_in
-        self.period_len = 24
-        self.d_model = 128
+        self.d_model = d_model
+        self.n_layers = n_layers
+        self.period_len = period_len
 
         self.seg_num_x = self.seq_len // self.period_len
         self.seg_num_y = self.pred_len // self.period_len
+
+        self.channel_proj = nn.Linear(self.seq_len, self.d_model)
+        self.channel_attn_blocks = nn.ModuleList([
+            channel_attn_block(self.enc_in, self.d_model, dropout)
+            for _ in range(self.n_layers)
+        ])
+
+        self.temporal_attn_blocks = nn.ModuleList([
+            temporal_attn_block(c_in, d_model, dropout)
+            for _ in range(n_layers)
+        ])
 
         self.conv1d = nn.Conv1d(
             in_channels=self.enc_in, out_channels=self.enc_in,
@@ -22,18 +77,22 @@ class Network(nn.Module):
             padding_mode="zeros", bias=False, groups=self.enc_in
         )
 
-
         self.pool = nn.AvgPool1d(
             kernel_size=1 + 2 * (self.period_len // 2),
             stride=1,
             padding=self.period_len // 2
         )
 
+        # Chuyển từ d_model về seq_len để dùng MLP như yêu cầu
+        self.to_seq = nn.Linear(self.d_model, self.seq_len)
+
         self.mlp = nn.Sequential(
             nn.Linear(self.seg_num_x, self.d_model * 2),
             nn.GELU(),
             nn.Linear(self.d_model * 2, self.seg_num_y)
         )
+
+        self.out_proj = nn.Linear(self.pred_len, self.enc_in)
 
         # Linear Stream
         self.fc5 = nn.Linear(seq_len, pred_len * 2)
@@ -45,30 +104,43 @@ class Network(nn.Module):
     def forward(self, s, t):
         # s: [Batch, Input, Channel]
         # t: [Batch, Input, Channel]
-        s = s.permute(0,2,1) # [Batch, Channel, Input]
-        t = t.permute(0,2,1) # [Batch, Channel, Input]
+        B, I, C = s.shape
 
-        B = s.shape[0]
-        C = s.shape[1]
-        I = s.shape[2]
-        t = torch.reshape(t, (B*C, I))
+        # Attention branch
+        s_proj = s.permute(0, 2, 1)  # [B, Channel, Input]
+        s_proj = self.channel_proj(s_proj)  # [B, Channel, d_model]
+        for i in range(self.n_layers):
+            s_proj = self.channel_attn_blocks[i](s_proj)  # [B, Channel, d_model]
+        attn_seq = self.to_seq(s_proj)  # [B, Channel, seq_len]
 
-        # Seasonal Stream: Conv1d + Pooling
+        s_temp = s  # [B, seq_len, enc_in]
+        for i in range(self.n_layers):
+            s_temp = self.temporal_attn_blocks[i](s_temp)  # [B, enc_in, seq_len]
+        attn_temp = s_temp.permute(0, 2, 1)
+
+        # Conv branch (depthwise)
+        s = s.permute(0, 2, 1)  # [B, Channel, Input]
         s_conv = self.conv1d(s)  # [B, C, seq_len]
         s_pool = self.pool(s_conv)  # [B, C, seq_len]
-        s = s_pool + s
-        s = s.reshape(-1, self.seg_num_x, self.period_len).permute(0, 2, 1)
-        y = self.mlp(s)
-        y = y.permute(0, 2, 1).reshape(B, self.enc_in, self.pred_len)
-        y = y.permute(0, 2, 1)
+
+        # Tổng hợp đặc trưng attention và conv
+        fused_seq = attn_seq + attn_temp + s_pool + s  # [B, Channel, seq_len]
+
+        # Reshape để dùng MLP như yêu cầu
+        fused_seq = fused_seq.reshape(-1, self.seg_num_x, self.period_len).permute(0, 2, 1)  # [B*C, period_len, seg_num_x]
+        y = self.mlp(fused_seq)  # [B*C, period_len, seg_num_y]
+        y = y.permute(0, 2, 1).reshape(B, self.enc_in, self.pred_len)  # [B, Channel, pred_len]
+        y = y.permute(0, 2, 1)  # [B, pred_len, Channel]
 
         # Linear Stream
+        t = t.permute(0,2,1) # [B, C, Input]
+        t = torch.reshape(t, (B*C, I))
         t = self.fc5(t)
         t = self.gelu1(t)
         t = self.ln1(t)
         t = self.fc7(t)
         t = self.fc8(t)
         t = torch.reshape(t, (B, C, self.pred_len))
-        t = t.permute(0,2,1) # [Batch, Output, Channel] = [B, pred_len, C]
+        t = t.permute(0,2,1) # [B, pred_len, C]
 
         return t + y
