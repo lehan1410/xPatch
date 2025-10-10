@@ -19,19 +19,15 @@ class Network(nn.Module):
             embed_dim=self.enc_in, num_heads=1, batch_first=True
         )
 
+        # Project từng bước thời gian lên d_model
+        self.time_proj = nn.Linear(self.period_len, self.d_model)
+
         # Attention theo chiều thời gian cho từng subsequence
         self.time_attn = nn.MultiheadAttention(
-            embed_dim=self.period_len, num_heads=1, batch_first=True
+            embed_dim=self.d_model, num_heads=1, batch_first=True
         )
 
-        # Linear pipeline cho seasonal từng subsequence
-        self.input_proj = nn.Linear(self.seq_len, self.d_model)
-        self.model = nn.Sequential(
-            nn.Linear(self.d_model, self.d_model),
-            nn.GELU()
-        )
-        self.dropout_layer = nn.Dropout(self.dropout)
-        # Linear để lấy đặc trưng cho subsequence (không dùng mean)
+        # Linear để lấy đặc trưng cho subsequence
         self.subseq_fusion = nn.Linear(self.period_len * self.d_model, self.period_len)
         self.subseq_proj = nn.Linear(self.period_len, self.period_len)
 
@@ -41,6 +37,8 @@ class Network(nn.Module):
         self.ln1 = nn.LayerNorm(pred_len * 2)
         self.fc7 = nn.Linear(pred_len * 2, pred_len)
         self.fc8 = nn.Linear(pred_len, pred_len)
+
+        self.dropout_layer = nn.Dropout(self.dropout)
 
     def forward(self, s, t):
         # s: [Batch, Input, Channel]
@@ -56,19 +54,20 @@ class Network(nn.Module):
         channel_attn_out, _ = self.channel_attn(s_channel, s_channel, s_channel)  # [B, seq_len, C]
         s_channel = channel_attn_out.permute(0, 2, 1)  # [B, C, seq_len]
 
-        # Project lên d_model
-        seasonal = self.input_proj(s_channel.reshape(B*C, self.seq_len))  # [B*C, d_model]
-        seasonal = self.model(seasonal)                                   # [B*C, d_model]
-        seasonal = self.dropout_layer(seasonal)
+        # Chia thành các subsequence
+        s_subseq = s_channel.reshape(B*C, self.num_subseq, self.period_len)  # [B*C, num_subseq, period_len]
 
-        # Dự đoán từng subsequence
         seasonal_subseq = []
         for i in range(self.num_subseq):
-            # Tạo đặc trưng cho subsequence
-            subseq_feat = seasonal.unsqueeze(1).repeat(1, self.period_len, 1)  # [B*C, period_len, d_model]
+            # Lấy đặc trưng từng bước thời gian cho subsequence i
+            subseq_raw = s_subseq[:, i, :]  # [B*C, period_len]
+            # Project từng bước thời gian lên d_model
+            subseq_feat = self.time_proj(subseq_raw)  # [B*C, d_model]
+            # Đưa về [B*C, period_len, d_model] để attention trên chiều thời gian
+            subseq_feat = subseq_feat.unsqueeze(1).repeat(1, self.period_len, 1)  # [B*C, period_len, d_model]
             # Attention theo chiều thời gian
             subseq_feat, _ = self.time_attn(subseq_feat, subseq_feat, subseq_feat)  # [B*C, period_len, d_model]
-            # Lấy đặc trưng bằng Linear thay vì mean
+            # Lấy đặc trưng bằng Linear
             subseq_feat = subseq_feat.reshape(-1, self.period_len * self.d_model)  # [B*C, period_len * d_model]
             subseq_feat = self.subseq_fusion(subseq_feat)  # [B*C, period_len]
             # Dự đoán cho subsequence
