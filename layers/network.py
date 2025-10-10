@@ -25,7 +25,7 @@ class temporal_attn_block(nn.Module):
     def __init__(self, enc_in, d_model, dropout):
         super(temporal_attn_block, self).__init__()
         self.proj_in = nn.Linear(enc_in, d_model)
-        self.attn_norm = nn.BatchNorm1d(d_model)
+        self.attn_norm = nn.BatchNorm1d(enc_in)
         self.fft_norm = nn.LayerNorm(d_model)
         self.temporal_attn = nn.MultiheadAttention(d_model, num_heads=1, batch_first=True)
         self.fft_layer = nn.Sequential(
@@ -41,9 +41,9 @@ class temporal_attn_block(nn.Module):
         x_proj = self.proj_in(x)  # [B, seq_len, d_model]
         attn_out, _ = self.temporal_attn(x_proj, x_proj, x_proj)  # [B, seq_len, d_model]
         attn_out = attn_out + x_proj
-        res_2 = self.attn_norm(attn_out.transpose(1,2)).transpose(1,2)  # [B, seq_len, d_model]
-        res_2 = self.fft_norm(self.fft_layer(res_2) + res_2)
+        res_2 = self.fft_norm(self.fft_layer(attn_out) + attn_out)
         out = self.proj_out(res_2)  # [B, seq_len, enc_in]  
+        out = self.attn_norm(out.transpose(1,2)).transpose(1,2)
         return out
 
 class Network(nn.Module):
