@@ -30,7 +30,7 @@ class Network(nn.Module):
 
         # Attention giữa các subsequence
         self.subseq_attn = nn.MultiheadAttention(
-            embed_dim=self.period_len, num_heads=2, batch_first=True
+            embed_dim=self.period_len, num_heads=1, batch_first=True
         )
 
         # FFT Layer tăng khả năng biểu diễn
