@@ -2,14 +2,15 @@ import torch
 from torch import nn
 
 class Network(nn.Module):
-    def __init__(self, seq_len, pred_len, c_in, period_len, d_model):
+    def __init__(self, seq_len, pred_len, c_in, period_len, d_model, dropout=0.1):
         super(Network, self).__init__()
 
+        # Parameters
         self.pred_len = pred_len
         self.seq_len = seq_len
         self.enc_in  = c_in
-        self.period_len = period_len
-        self.d_model = d_model
+        self.period_len = 24
+        self.d_model = 128
 
         self.seg_num_x = self.seq_len // self.period_len
         self.seg_num_y = self.pred_len // self.period_len
@@ -27,18 +28,21 @@ class Network(nn.Module):
             padding=self.period_len // 2
         )
 
-        # Linear để trộn subsequence
-        self.subseq_mixer = nn.Sequential(
-            nn.Linear(self.seg_num_x, self.seg_num_x * 2),
-            nn.GELU(),
-            nn.Linear(self.seg_num_x * 2, self.seg_num_x)
+        # Attention giữa các subsequence
+        self.subseq_attn = nn.MultiheadAttention(
+            embed_dim=self.period_len, num_heads=2, batch_first=True
         )
 
-        # Linear để trộn channel
-        self.channel_mixer = nn.Sequential(
-            nn.Linear(self.enc_in, self.enc_in * 2),
+        self.channel_attn = nn.MultiheadAttention(
+            embed_dim=self.enc_in, num_heads=2, batch_first=True
+        )
+
+        # FFT Layer tăng khả năng biểu diễn
+        self.fft_layer = nn.Sequential(
+            nn.Linear(self.period_len, int(self.period_len * 2)),
             nn.GELU(),
-            nn.Linear(self.enc_in * 2, self.enc_in)
+            nn.Dropout(dropout),
+            nn.Linear(int(self.period_len * 2), self.period_len),
         )
 
         self.mlp = nn.Sequential(
@@ -69,24 +73,23 @@ class Network(nn.Module):
         s_conv = self.conv1d(s)  # [B, C, seq_len]
         s_pool = self.pool(s_conv)  # [B, C, seq_len]
         s = s_pool + s
+        s_channel = s.permute(0, 2, 1)  # [B, seq_len, C]
+        channel_attn_out, _ = self.channel_attn(s_channel, s_channel, s_channel)  # [B, seq_len, C]
+        s_channel = channel_attn_out.permute(0, 2, 1) # [B*C, seg_num_x, period_len]
 
-        # Chia thành các subsequence
-        s = s.reshape(B, C, self.seg_num_x, self.period_len)  # [B, C, seg_num_x, period_len]
-        s = s.mean(-1)  # [B, C, seg_num_x]  # lấy trung bình mỗi subsequence
+        s_subseq = s_channel.reshape(-1, self.seg_num_x, self.period_len) # [B*C, seg_num_x, period_len]
 
-        # Trộn subsequence (theo chiều seg_num_x)
-        s_subseq = self.subseq_mixer(s)  # [B, C, seg_num_x]
+        # Attention giữa các subsequence
+        attn_out, _ = self.subseq_attn(s_subseq, s_subseq, s_subseq)  # [B*C, seg_num_x, period_len]
 
-        # Trộn channel (theo chiều channel)
-        s_channel = s.permute(0, 2, 1)  # [B, seg_num_x, C]
-        s_channel = self.channel_mixer(s_channel)  # [B, seg_num_x, C]
-        s_channel = s_channel.permute(0, 2, 1)  # [B, C, seg_num_x]
+        # FFT Layer trên từng subsequence
+        fft_out = self.fft_layer(attn_out)  # [B*C, seg_num_x, period_len]
 
-        # Cộng đặc trưng subsequence và channel
-        s_fused = s_subseq + s_channel  # [B, C, seg_num_x]
+        # Đưa vào MLP
+        mlp_in = fft_out.permute(0, 2, 1) 
 
-        # Đưa qua MLP như cũ
-        y = self.mlp(s_fused)  # [B, C, seg_num_y]
+        # Đưa vào MLP
+        y = self.mlp(mlp_in)
         y = y.permute(0, 2, 1).reshape(B, self.enc_in, self.pred_len)
         y = y.permute(0, 2, 1)
 
