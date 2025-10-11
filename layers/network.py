@@ -95,8 +95,12 @@ class Network(nn.Module):
         # Attention giữa các subsequence
         patch_attn_out, _ = self.patch_attn(s_patch, s_patch, s_patch)   # [B*C, patch_num, period_len]
 
+        s_attn = patch_attn_out.reshape(B, C, self.seg_num_x * self.period_len)  # [B, C, seq_len]
+
+        s = s_attn.reshape(-1, self.seg_num_x, self.period_len).permute(0, 2, 1)
+
         # Đưa qua MLP để dự đoán
-        y = self.mlp(patch_attn_out)                                    # [B*C, period_len, seg_num_y]
+        y = self.mlp(s)                                    # [B*C, period_len, seg_num_y]
         y = y.permute(0, 2, 1).reshape(B, C, self.seg_num_y * self.period_len)
         y = y[:, :, :self.pred_len]                                     # [B, C, pred_len]
         y = y.permute(0, 2, 1)                                          # [B, pred_len, C]
