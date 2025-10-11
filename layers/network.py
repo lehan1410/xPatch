@@ -30,9 +30,9 @@ class Network(nn.Module):
         self.dropout = dropout
 
         # Attention cho channel
-        self.channel_attn = nn.MultiheadAttention(
-            embed_dim=self.enc_in, num_heads=1, batch_first=True
-        )
+        # self.channel_attn = nn.MultiheadAttention(
+        #     embed_dim=self.enc_in, num_heads=1, batch_first=True
+        # )
 
         self.seg_num_x = self.seq_len // self.period_len
         self.seg_num_y = self.pred_len // self.period_len
@@ -49,6 +49,26 @@ class Network(nn.Module):
             stride=1,
             padding=self.period_len // 2
         )
+
+        self.activation = nn.Sequential(
+            nn.LeakyReLU(negative_slope=0.01, inplace=True),
+            nn.Dropout(dropout),
+        )
+
+        self.conv1d2 = nn.Conv1d(
+            in_channels=self.enc_in, out_channels=self.enc_in,
+            kernel_size=1 + 2 * (self.period_len // 2),
+            stride=1, padding=self.period_len // 2,
+            padding_mode="zeros", bias=False, groups=self.enc_in
+        )
+
+        self.pool2 = nn.AvgPool1d(
+            kernel_size=1 + 2 * (self.period_len // 2),
+            stride=1,
+            padding=self.period_len // 2
+        )
+
+        self.tanh = nn.Tanh()
 
 
         self.mlp = nn.Sequential(
@@ -74,18 +94,30 @@ class Network(nn.Module):
         B, C, I = s.shape
         t = torch.reshape(t, (B*C, I))
 
-        s_attn_in = s.permute(0, 2, 1)  # [B, Input, Channel]
-        s_attn_out, _ = self.channel_attn(s_attn_in, s_attn_in, s_attn_in)  # [B, Input, Channel]
-        s = s_attn_out.permute(0, 2, 1)
+        # s_attn_in = s.permute(0, 2, 1)  # [B, Input, Channel]
+        # s_attn_out, _ = self.channel_attn(s_attn_in, s_attn_in, s_attn_in)  # [B, Input, Channel]
+        # s = s_attn_out.permute(0, 2, 1)
 
         # Seasonal Stream: chỉ attention các channel
         # s_conv = self.conv1d(s.reshape(-1, 1, self.seq_len)).reshape(-1, self.enc_in, self.seq_len) + s
 
-        s_conv = self.conv1d(s)  # [B, C, seq_len]
-        s_pool = self.pool(s_conv)  # [B, C, seq_len]
-        s = s_pool + s
-        s = s.reshape(-1, self.seg_num_x, self.period_len).permute(0, 2, 1)
-        y = self.mlp(s)
+        # Block 1: Conv1d + Pool + Activation + Residual
+        s_res1 = s
+        s_conv1 = self.conv1d(s)                # [B, C, seq_len]
+        s_pool1 = self.pool(s_conv1)            # [B, C, seq_len]
+        s_act1 = self.activation(s_pool1)       # [B, C, seq_len]
+        s_act1 = s_act1 + s_res1                # Residual connection
+
+        # Block 2: Conv1d2 + Pool2 + Tanh + Residual
+        s_res2 = s_act1
+        s_conv2 = self.conv1d2(s_act1)          # [B, C, seq_len]
+        s_pool2 = self.pool2(s_conv2)           # [B, C, seq_len]
+        s_out = self.tanh(s_pool2)              # [B, C, seq_len]
+        s_out = s_out + s_res2                  # Residual connection
+
+        # Reshape và MLP
+        s_patch = s_out.reshape(-1, self.seg_num_x, self.period_len).permute(0, 2, 1)
+        y = self.mlp(s_patch)
         y = y.permute(0, 2, 1).reshape(B, self.enc_in, self.pred_len)
         y = y.permute(0, 2, 1)
 
