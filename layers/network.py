@@ -28,9 +28,9 @@ class MixerBlock(nn.Module):
         x = x + y  # residual channel
 
         z = self.norm2(x.transpose(1, 2))  # [B, seq_len, C]
-        z = z.transpose(1, 2) 
-        z = self.mlp2(z)
         z = z.transpose(1, 2)  # [B, C, seq_len]
+        z = self.mlp2(z)
+        # z = z.transpose(1, 2)  # [B, C, seq_len]
         out = x + z  # residual token
         return out
 
