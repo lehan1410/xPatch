@@ -1,6 +1,38 @@
 import torch
 from torch import nn
 
+class MixerBlock(nn.Module):
+    def __init__(self, channel, seq_len, d_model, dropout=0.1, expansion=2):
+        super().__init__()
+        self.norm1 = nn.LayerNorm(seq_len)
+        self.mlp1 = nn.Sequential(
+            nn.Linear(channel, channel * expansion),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(channel * expansion, channel)
+        )
+        self.norm2 = nn.LayerNorm(channel)
+        self.mlp2 = nn.Sequential(
+            nn.Linear(seq_len, d_model * expansion),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(d_model * expansion, seq_len)
+        )
+
+    def forward(self, x):
+        # x: [B, C, seq_len]
+        y = self.norm1(x)
+        y = y.transpose(1, 2)  # [B, seq_len, C]
+        y = self.mlp1(y)
+        y = y.transpose(1, 2)  # [B, C, seq_len]
+        x = x + y  # residual channel
+
+        z = self.norm2(x.transpose(1, 2))  # [B, seq_len, C]
+        z = self.mlp2(z)
+        z = z.transpose(1, 2)  # [B, C, seq_len]
+        out = x + z  # residual token
+        return out
+
 class Network(nn.Module):
     def __init__(self, seq_len, pred_len, c_in, period_len, d_model, dropout=0.1):
         super(Network, self).__init__()
@@ -33,10 +65,11 @@ class Network(nn.Module):
             nn.Dropout(dropout),
         )
 
-  
         self.channel_attn = nn.MultiheadAttention(
             embed_dim=self.enc_in, num_heads=1, batch_first=True
         )
+
+        self.mixer = MixerBlock(channel=self.enc_in, seq_len=self.seq_len, d_model=self.d_model, dropout=dropout)
 
         self.mlp = nn.Sequential(
             nn.Linear(self.seg_num_x, self.d_model * 2),
@@ -44,7 +77,6 @@ class Network(nn.Module):
             nn.Linear(self.d_model * 2, self.seg_num_y)
         )
 
-        # Linear Stream cho trend
         self.fc5 = nn.Linear(seq_len, pred_len * 2)
         self.gelu1 = nn.GELU()
         self.ln1 = nn.LayerNorm(pred_len * 2)
@@ -52,31 +84,34 @@ class Network(nn.Module):
         self.fc8 = nn.Linear(pred_len, pred_len)
 
     def forward(self, s, t):
-        # s: [Batch, Input, Channel]
-        # t: [Batch, Input, Channel]
-        s = s.permute(0,2,1) # [Batch, Channel, Input]
-        t = t.permute(0,2,1) # [Batch, Channel, Input]
+        s = s.permute(0,2,1) # [B, C, Input]
+        t = t.permute(0,2,1) # [B, C, Input]
 
         B, C, I = s.shape
         t = torch.reshape(t, (B*C, I))
 
+        # Conv1d cho từng channel riêng biệt
         s_conv = self.conv1d(s.reshape(-1, 1, self.seq_len)).reshape(-1, self.enc_in, self.seq_len)
         s_pool1 = self.pool(s_conv)
         s_act = self.activation(s_pool1)
+        s_feat = s_act + s  # residual
 
-        s_attn_in = s.permute(0, 2, 1)  
-        s_attn_out, _ = self.channel_attn(s_attn_in, s_attn_in, s_attn_in)  
+        # Attention channel
+        s_attn_in = s_feat.permute(0, 2, 1)  # [B, seq_len, C]
+        s_attn_out, _ = self.channel_attn(s_attn_in, s_attn_in, s_attn_in)
         s_attn_out = s_attn_out.permute(0, 2, 1)  # [B, C, seq_len]
+        s_fusion = s_feat + s_attn_out  # residual
 
+        # Mixer block cho các chuỗi thời gian
+        s_mixed = self.mixer(s_fusion)  # [B, C, seq_len]
 
-        s = s + s_attn_out + s_act
-
-        s = s.reshape(-1, self.seg_num_x, self.period_len).permute(0, 2, 1)
+        # Reshape thành patch/subsequence
+        s_patch = s_mixed.reshape(-1, self.seg_num_x, self.period_len).permute(0, 2, 1)
 
         # Đưa qua MLP để dự đoán
-        y = self.mlp(s)                                  
+        y = self.mlp(s_patch)
         y = y.permute(0, 2, 1).reshape(B, self.enc_in, self.pred_len)
-        y = y.permute(0, 2, 1)                                       
+        y = y.permute(0, 2, 1)
 
         # Trend Stream
         t = self.fc5(t)
