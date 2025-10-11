@@ -41,7 +41,7 @@ class Network(nn.Module):
         self.seg_num_x = self.seq_len // self.period_len
         self.seg_num_y = self.pred_len // self.period_len
 
-        self.conv1d = nn.CausalConv1d(
+        self.conv1d = CausalConv1d(
             in_channels=self.enc_in, out_channels=self.enc_in,
             kernel_size=1 + 2 * (self.period_len // 2),
             stride=1, padding=self.period_len // 2,

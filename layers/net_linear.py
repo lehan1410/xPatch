@@ -22,7 +22,6 @@ class Network(nn.Module):
             padding_mode="zeros", bias=False, groups=self.enc_in
         )
 
-
         self.pool = nn.AvgPool1d(
             kernel_size=1 + 2 * (self.period_len // 2),
             stride=1,
