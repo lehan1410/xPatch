@@ -1,48 +1,25 @@
 import torch
 from torch import nn
 
-class TokenMixer(nn.Module):
-    def __init__(self, input_seq, pred_seq, dropout, factor):
-        super(TokenMixer, self).__init__()
-        self.layers = nn.Sequential(
-            nn.Linear(input_seq, pred_seq * factor),
-            nn.GELU(),
+
+class CausalConvBlock(nn.Module):
+    def __init__(self, d_model, kernel_size=5, dropout=0.0):
+        super(CausalConvBlock, self).__init__()
+        module_list = [
+            nn.ReplicationPad1d((kernel_size - 1, kernel_size - 1)),
+            nn.Conv1d(d_model, d_model, kernel_size=kernel_size),
+            nn.LeakyReLU(negative_slope=0.01, inplace=True),
             nn.Dropout(dropout),
-            nn.Linear(pred_seq * factor, pred_seq)
-        )
+            nn.Conv1d(d_model, d_model, kernel_size=kernel_size),
+            nn.Tanh()
+        ]
+        self.causal_conv = nn.Sequential(*module_list)
 
     def forward(self, x):
-        x = x.transpose(1, 2)
-        x = self.layers(x)
-        x = x.transpose(1, 2)
-        return x
-
-class Mixer(nn.Module):
-    def __init__(self, input_seq, out_seq, channel, d_model, dropout, tfactor, dfactor):
-        super(Mixer, self).__init__()
-        self.tMixer = TokenMixer(input_seq, out_seq, dropout, tfactor)
-        self.dropoutLayer = nn.Dropout(dropout)
-        self.norm1 = nn.BatchNorm2d(channel)
-        self.norm2 = nn.BatchNorm2d(channel)
-        self.embeddingMixer = nn.Sequential(
-            nn.Linear(d_model, d_model * dfactor),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(d_model * dfactor, d_model)
-        )
-
-    def forward(self, x):
-        # x: [Batch, Channel, Patch_number, d_model]
-        x = self.norm1(x)
-        x = x.permute(0, 3, 1, 2)  # [B, d_model, C, Patch_number]
-        x = self.dropoutLayer(self.tMixer(x))
-        x = x.permute(0, 2, 3, 1)  # [B, C, Patch_number, d_model]
-        x = self.norm2(x)
-        x = x + self.dropoutLayer(self.embeddingMixer(x))
-        return x
+        return self.causal_conv(x)
 
 class Network(nn.Module):
-    def __init__(self, seq_len, pred_len, c_in, period_len, d_model, dropout=0.1, tfactor=2, dfactor=2):
+    def __init__(self, seq_len, pred_len, c_in, period_len, d_model, dropout=0.1):
         super(Network, self).__init__()
 
         self.pred_len = pred_len
@@ -52,35 +29,27 @@ class Network(nn.Module):
         self.d_model = d_model
         self.dropout = dropout
 
-        self.seg_num_x = self.seq_len // self.period_len
-        self.seg_num_y = self.pred_len // self.period_len
-
         # Attention cho channel
         self.channel_attn = nn.MultiheadAttention(
             embed_dim=self.enc_in, num_heads=1, batch_first=True
         )
 
-        # Conv1d để học pattern thời gian
-        self.conv1d = nn.Conv1d(
-            in_channels=self.enc_in, out_channels=self.enc_in,
+        self.seg_num_x = self.seq_len // self.period_len
+        self.seg_num_y = self.pred_len // self.period_len
+
+        self.conv1d = CausalConvBlock(
+            d_model=self.enc_in,
             kernel_size=1 + 2 * (self.period_len // 2),
-            stride=1, padding=self.period_len // 2,
-            padding_mode="zeros", bias=False, groups=self.enc_in
+            dropout=self.dropout
         )
 
-        # Project patch lên d_model
-        self.patch_proj = nn.Linear(self.period_len, self.d_model)
 
-        # Mixer block
-        self.mixer = Mixer(
-            input_seq=self.seg_num_x,
-            out_seq=self.seg_num_y,
-            channel=self.enc_in,
-            d_model=self.d_model,
-            dropout=self.dropout,
-            tfactor=tfactor,
-            dfactor=dfactor
+        self.mlp = nn.Sequential(
+            nn.Linear(self.seg_num_x, self.d_model * 2),
+            nn.GELU(),
+            nn.Linear(self.d_model * 2, self.seg_num_y)
         )
+
 
         # Linear Stream cho trend
         self.fc5 = nn.Linear(seq_len, pred_len * 2)
@@ -98,35 +67,25 @@ class Network(nn.Module):
         B, C, I = s.shape
         t = torch.reshape(t, (B*C, I))
 
-        # Attention các channel
-        s_channel = s.permute(0, 2, 1)  # [B, seq_len, C]
-        channel_attn_out, _ = self.channel_attn(s_channel, s_channel, s_channel)  # [B, seq_len, C]
-        s_channel = channel_attn_out.permute(0, 2, 1)  # [B, C, seq_len]
+        s_attn_in = s.permute(0, 2, 1)  # [B, Input, Channel]
+        s_attn_out, _ = self.channel_attn(s_attn_in, s_attn_in, s_attn_in)  # [B, Input, Channel]
+        s = s_attn_out.permute(0, 2, 1)
 
-        # Conv1d để học pattern thời gian
-        s_conv = self.conv1d(s_channel)  # [B, C, seq_len]
+        # Seasonal Stream: chỉ attention các channel
+        s_conv = self.conv1d(s)  # [B, C, seq_len]
+        # s_pool = self.pool(s_conv)  # [B, C, seq_len]
+        s = s_conv + s
+        s = s.reshape(-1, self.seg_num_x, self.period_len).permute(0, 2, 1)
+        y = self.mlp(s)
+        y = y.permute(0, 2, 1).reshape(B, self.enc_in, self.pred_len)
+        y = y.permute(0, 2, 1)
 
-        # Chia thành các patch/subsequence
-        s_patch = s_conv.reshape(B, C, self.seg_num_x, self.period_len)  # [B, C, seg_num_x, period_len]
-        s_patch = self.patch_proj(s_patch)  # [B, C, seg_num_x, d_model]
+        t = self.fc5(t)
+        t = self.gelu1(t)
+        t = self.ln1(t)
+        t = self.fc7(t)
+        t = self.fc8(t)
+        t = torch.reshape(t, (B, C, self.pred_len))
+        t = t.permute(0,2,1)
 
-        # Mixer block
-        s_mixed = self.mixer(s_patch)  # [B, C, seg_num_y, d_model]
-
-        # Flatten để ra dự báo
-        y = s_mixed.reshape(B, C, self.seg_num_y * self.d_model)
-        y = y[:, :, :self.pred_len]  # [B, C, pred_len]
-        y = y.permute(0, 2, 1)      # [B, pred_len, C]
-
-        # Trend Stream: thêm residual
-        t_trend_origin = t.clone()
-        t_trend = self.fc5(t)
-        t_trend = self.gelu1(t_trend)
-        t_trend = self.ln1(t_trend)
-        t_trend = self.fc7(t_trend)
-        t_trend = self.fc8(t_trend)
-        t_trend = t_trend + t_trend_origin[:, :self.pred_len]
-        t_trend = torch.reshape(t_trend, (B, C, self.pred_len))
-        t_trend = t_trend.permute(0,2,1)
-
-        return t_trend + y
+        return t + y
