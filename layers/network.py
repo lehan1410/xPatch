@@ -101,9 +101,8 @@ class Network(nn.Module):
 
         # Đưa qua MLP để dự đoán
         y = self.mlp(s)                                    # [B*C, period_len, seg_num_y]
-        y = y.permute(0, 2, 1).reshape(B, C, self.seg_num_y * self.period_len)
-        y = y[:, :, :self.pred_len]                                     # [B, C, pred_len]
-        y = y.permute(0, 2, 1)                                          # [B, pred_len, C]
+        y = y.permute(0, 2, 1).reshape(B, self.enc_in, self.pred_len)
+        y = y.permute(0, 2, 1)                                        # [B, pred_len, C]
 
         # Trend Stream
         t = self.fc5(t)
