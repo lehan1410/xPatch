@@ -12,25 +12,28 @@ class Network(nn.Module):
         self.d_model = d_model
         self.dropout = dropout
 
-        self.num_subseq = self.pred_len // self.period_len
-        self.num_subseq_x = self.seq_len // self.period_len
-
         # Attention cho channel
         self.channel_attn = nn.MultiheadAttention(
             embed_dim=self.enc_in, num_heads=1, batch_first=True
         )
 
-        # Project từng bước thời gian lên d_model
-        self.time_proj = nn.Linear(self.period_len, self.d_model)
+        self.seg_num_x = self.seq_len // self.period_len
+        self.seg_num_y = self.pred_len // self.period_len
 
-        # Attention theo chiều thời gian cho từng subsequence
-        self.time_attn = nn.MultiheadAttention(
-            embed_dim=self.d_model, num_heads=1, batch_first=True
+        self.conv1d = nn.Conv1d(
+            in_channels=self.enc_in, out_channels=self.enc_in,
+            kernel_size=1 + 2 * (self.period_len // 2),
+            stride=1, padding=self.period_len // 2,
+            padding_mode="zeros", bias=False, groups=self.enc_in
         )
 
-        # Linear để lấy đặc trưng cho subsequence
-        self.subseq_fusion = nn.Linear(self.period_len * self.d_model, self.period_len)
-        self.subseq_proj = nn.Linear(self.period_len, self.period_len)
+
+        self.mlp = nn.Sequential(
+            nn.Linear(self.seg_num_x, self.d_model * 2),
+            nn.GELU(),
+            nn.Linear(self.d_model * 2, self.seg_num_y)
+        )
+
 
         # Linear Stream cho trend
         self.fc5 = nn.Linear(seq_len, pred_len * 2)
@@ -48,49 +51,26 @@ class Network(nn.Module):
         B, C, I = s.shape
         t_trend = torch.reshape(t, (B*C, I))
 
-        # Seasonal Stream: attention các channel
+        # Seasonal Stream: chỉ attention các channel
         s_channel = s.permute(0, 2, 1)  # [B, seq_len, C]
         channel_attn_out, _ = self.channel_attn(s_channel, s_channel, s_channel)  # [B, seq_len, C]
         s_channel = channel_attn_out.permute(0, 2, 1)  # [B, C, seq_len]
 
-        # Chia thành các subsequence từ đầu vào
-        num_subseq_x = self.seq_len // self.period_len
-        s_subseq_all = s_channel.reshape(B*C, num_subseq_x, self.period_len)  # [B*C, num_subseq_x, period_len]
-        # Lấy các subsequence cuối cùng để dự báo
-        start_idx = num_subseq_x - self.num_subseq
-        s_subseq = s_subseq_all[:, start_idx:, :]  # [B*C, num_subseq, period_len]
+        s_conv = self.conv1d(s_channel) + s             # [B, pred_len, C]
+        s_subseq = s_conv.reshape(B, C, self.seg_num_x, self.period_len)  # [B, C, seg_num_x, period_len]
+        s_subseq = s_subseq.mean(-1)  # [B, C, seg_num_x]  # lấy trung bình mỗi subsequence
 
-        seasonal_subseq = []
-        for i in range(self.num_subseq):
-            # Lấy đặc trưng từng bước thời gian cho subsequence i
-            subseq_raw = s_subseq[:, i, :]  # [B*C, period_len]
-            # Project từng bước thời gian lên d_model
-            subseq_feat = self.time_proj(subseq_raw)  # [B*C, d_model]
-            # Đưa về [B*C, period_len, d_model] để attention trên chiều thời gian
-            subseq_feat = subseq_feat.unsqueeze(1).repeat(1, self.period_len, 1)  # [B*C, period_len, d_model]
-            # Attention theo chiều thời gian
-            subseq_feat, _ = self.time_attn(subseq_feat, subseq_feat, subseq_feat)  # [B*C, period_len, d_model]
-            # Lấy đặc trưng bằng Linear
-            subseq_feat = subseq_feat.reshape(-1, self.period_len * self.d_model)  # [B*C, period_len * d_model]
-            subseq_feat = self.subseq_fusion(subseq_feat)  # [B*C, period_len]
-            # Dự đoán cho subsequence
-            subseq_out = self.subseq_proj(subseq_feat)  # [B*C, period_len]
-            seasonal_subseq.append(subseq_out)
+        # Dự đoán bằng MLP
+        seasonal = self.mlp(s_subseq)  # [B, C, seg_num_y]
+        seasonal = seasonal.reshape(B, C, self.seg_num_y * self.period_len)[:, :, :self.pred_len]  # [B, C, pred_len]
+        seasonal = seasonal.permute(0, 2, 1)
 
-        # Ghép các subsequence lại
-        seasonal = torch.cat(seasonal_subseq, dim=-1)  # [B*C, pred_len]
-        seasonal = seasonal.reshape(B, C, self.pred_len)
-        seasonal = seasonal.permute(0, 2, 1)           # [B, pred_len, C]
+        t = self.fc5(t)
+        t = self.gelu1(t)
+        t = self.ln1(t)
+        t = self.fc7(t)
+        t = self.fc8(t)
+        t = torch.reshape(t, (B, C, self.pred_len))
+        t = t.permute(0,2,1)
 
-        # Trend Stream: thêm residual
-        t_trend_origin = t_trend.clone()               # [B*C, seq_len]
-        t_trend = self.fc5(t_trend)
-        t_trend = self.gelu1(t_trend)
-        t_trend = self.ln1(t_trend)
-        t_trend = self.fc7(t_trend)
-        t_trend = self.fc8(t_trend)
-        t_trend = t_trend + t_trend_origin[:, :self.pred_len]
-        t_trend = torch.reshape(t_trend, (B, C, self.pred_len))
-        t_trend = t_trend.permute(0,2,1) # [B, pred_len, C]
-
-        return t_trend + seasonal
+        return t + seasonal
