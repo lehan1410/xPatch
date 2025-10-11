@@ -50,7 +50,7 @@ class Network(nn.Module):
 
         # Attention giữa các subsequence (patch)
         self.patch_attn = nn.MultiheadAttention(
-            embed_dim=self.period_len, num_heads=2, batch_first=True
+            embed_dim=self.period_len, num_heads=1, batch_first=True
         )
 
         self.mlp = nn.Sequential(
