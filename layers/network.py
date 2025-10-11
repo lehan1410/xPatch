@@ -3,18 +3,14 @@ from torch import nn
 
 
 class CausalConvBlock(nn.Module):
-    def __init__(self, d_model, kernel_size=5, dropout=0.0, padding=0):
+    def __init__(self, d_model, kernel_size=5, dropout=0.0):
         super(CausalConvBlock, self).__init__()
         module_list = [
             nn.ReplicationPad1d((kernel_size - 1, kernel_size - 1)),
-            nn.Conv1d(d_model, d_model, kernel_size=kernel_size,
-                       stride=1, padding=padding,
-                       padding_mode="zeros", bias=False, groups=d_model),
+            nn.Conv1d(d_model, d_model, kernel_size=kernel_size),
             nn.LeakyReLU(negative_slope=0.01, inplace=True),
             nn.Dropout(dropout),
-            nn.Conv1d(d_model, d_model, kernel_size=kernel_size,
-                       stride=1, padding=padding,
-                       padding_mode="zeros", bias=False, groups=d_model),
+            nn.Conv1d(d_model, d_model, kernel_size=kernel_size),
             nn.Tanh()
         ]
         self.causal_conv = nn.Sequential(*module_list)
