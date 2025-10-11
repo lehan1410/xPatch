@@ -68,4 +68,4 @@ class Network(nn.Module):
         t = torch.reshape(t, (B, C, self.pred_len))
         t = t.permute(0,2,1)
 
-        return t + seasonal
+        return t + y
