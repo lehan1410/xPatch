@@ -37,8 +37,12 @@ class Network(nn.Module):
         self.seg_num_x = self.seq_len // self.period_len
         self.seg_num_y = self.pred_len // self.period_len
 
-        self.conv1d = nn.Conv1d(in_channels=1, out_channels=1, kernel_size=1 + 2 * (self.period_len // 2),
-                                stride=1, padding=self.period_len // 2, padding_mode="zeros", bias=False)
+        self.conv1d = nn.Conv1d(
+            in_channels=self.enc_in, out_channels=self.enc_in,
+            kernel_size=1 + 2 * (self.period_len // 2),
+            stride=1, padding=self.period_len // 2,
+            padding_mode="zeros", bias=False, groups=self.enc_in
+        )
 
         self.pool = nn.AvgPool1d(
             kernel_size=1 + 2 * (self.period_len // 2),
@@ -75,9 +79,9 @@ class Network(nn.Module):
         s = s_attn_out.permute(0, 2, 1)
 
         # Seasonal Stream: chỉ attention các channel
-        s_conv = self.conv1d(s.reshape(-1, 1, self.seq_len)).reshape(-1, self.enc_in, self.seq_len) + s
+        # s_conv = self.conv1d(s.reshape(-1, 1, self.seq_len)).reshape(-1, self.enc_in, self.seq_len) + s
 
-        # s_conv = self.conv1d(s)  # [B, C, seq_len]
+        s_conv = self.conv1d(s)  # [B, C, seq_len]
         s_pool = self.pool(s_conv)  # [B, C, seq_len]
         s = s_pool + s
         s = s.reshape(-1, self.seg_num_x, self.period_len).permute(0, 2, 1)
