@@ -38,7 +38,7 @@ class Network(nn.Module):
         self.seg_num_y = self.pred_len // self.period_len
 
         self.conv1d = CausalConvBlock(
-            d_model=self.enc_in,
+            d_model=1,
             kernel_size=1 + 2 * (self.period_len // 2),
             dropout=self.dropout, padding=self.period_len // 2
         )
