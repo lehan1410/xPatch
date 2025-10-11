@@ -33,9 +33,9 @@ class Network(nn.Module):
             nn.Dropout(dropout),
         )
 
-        # Attention giữa các subsequence (patch)
+  
         self.channel_attn = nn.MultiheadAttention(
-            embed_dim=self.seq_len, num_heads=1, batch_first=True
+            embed_dim=self.enc_in, num_heads=1, batch_first=True
         )
 
         self.mlp = nn.Sequential(
