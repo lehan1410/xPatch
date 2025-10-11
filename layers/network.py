@@ -2,25 +2,21 @@ import torch
 from torch import nn
 
 
-class CausalConv1d(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size, stride=1, dilation=1, bias=False, groups=1):
-        super().__init__()
-        pad_left = (kernel_size - 1) // 2
-        pad_right = (kernel_size - 1) - pad_left
-        self.pad = nn.ConstantPad1d((pad_left, pad_right), 0)
-        self.conv = nn.Conv1d(
-            in_channels=in_channels,
-            out_channels=out_channels,
-            kernel_size=kernel_size,
-            stride=stride,
-            dilation=dilation,
-            bias=bias,
-            groups=groups
-        )
+class CausalConvBlock(nn.Module):
+    def __init__(self, d_model, kernel_size=5, dropout=0.0):
+        super(CausalConvBlock, self).__init__()
+        module_list = [
+            nn.ReplicationPad1d((kernel_size - 1, kernel_size - 1)),
+            nn.Conv1d(d_model, d_model, kernel_size=kernel_size),
+            nn.LeakyReLU(negative_slope=0.01, inplace=True),
+            nn.Dropout(dropout),
+            nn.Conv1d(d_model, d_model, kernel_size=kernel_size),
+            nn.Tanh()
+        ]
+        self.causal_conv = nn.Sequential(*module_list)
 
     def forward(self, x):
-        x = self.pad(x)
-        return self.conv(x)
+        return self.causal_conv(x)
 
 class Network(nn.Module):
     def __init__(self, seq_len, pred_len, c_in, period_len, d_model, dropout=0.1):
@@ -41,11 +37,10 @@ class Network(nn.Module):
         self.seg_num_x = self.seq_len // self.period_len
         self.seg_num_y = self.pred_len // self.period_len
 
-        self.conv1d = CausalConv1d(
-            in_channels=self.enc_in, out_channels=self.enc_in,
+        self.conv1d = CausalConvBlock(
+            d_model=self.enc_in,
             kernel_size=1 + 2 * (self.period_len // 2),
-            stride=1, padding=self.period_len // 2,
-            padding_mode="zeros", bias=False, groups=self.enc_in
+            dropout=self.dropout
         )
 
 
