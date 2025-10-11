@@ -35,7 +35,7 @@ class Network(nn.Module):
 
         # Attention giữa các subsequence (patch)
         self.patch_attn = nn.MultiheadAttention(
-            embed_dim=self.period_len, num_heads=1, batch_first=True
+            embed_dim=self.seq_len, num_heads=1, batch_first=True
         )
 
         self.mlp = nn.Sequential(
@@ -64,22 +64,19 @@ class Network(nn.Module):
         s_pool1 = self.pool(s_conv)
         s_act = self.activation(s_pool1)
 
-        s = s_act + s  
+        s_attn_in = s.permute(0, 2, 1)  
+        s_attn_out, _ = self.channel_attn(s_attn_in, s_attn_in, s_attn_in)  
+        s_attn_out = s_attn_out.permute(0, 2, 1)  # [B, C, seq_len]
 
-        # Reshape thành patch/subsequence
-        s_patch = s.reshape(B * C, self.seg_num_x, self.period_len)  # [B*C, patch_num, period_len]
 
-        # Attention giữa các subsequence
-        patch_attn_out, _ = self.patch_attn(s_patch, s_patch, s_patch)   # [B*C, patch_num, period_len]
+        s = s + s_attn_out + s_act
 
-        s_attn = patch_attn_out.reshape(B, C, self.seg_num_x * self.period_len)  # [B, C, seq_len]
-
-        s = s_attn.reshape(-1, self.seg_num_x, self.period_len).permute(0, 2, 1)
+        s = s.reshape(-1, self.seg_num_x, self.period_len).permute(0, 2, 1)
 
         # Đưa qua MLP để dự đoán
-        y = self.mlp(s)                                    # [B*C, period_len, seg_num_y]
+        y = self.mlp(s)                                  
         y = y.permute(0, 2, 1).reshape(B, self.enc_in, self.pred_len)
-        y = y.permute(0, 2, 1)                                        # [B, pred_len, C]
+        y = y.permute(0, 2, 1)                                       
 
         # Trend Stream
         t = self.fc5(t)
