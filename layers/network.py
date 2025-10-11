@@ -38,9 +38,15 @@ class Network(nn.Module):
         self.seg_num_y = self.pred_len // self.period_len
 
         self.conv1d = CausalConvBlock(
-            d_model=self.enc_in,
+            d_model=1,
             kernel_size=1 + 2 * (self.period_len // 2),
             dropout=self.dropout
+        )
+
+        self.pool = nn.AvgPool1d(
+            kernel_size=1 + 2 * (self.period_len // 2),
+            stride=1,
+            padding=self.period_len // 2
         )
 
 
@@ -73,8 +79,8 @@ class Network(nn.Module):
 
         # Seasonal Stream: chỉ attention các channel
         s_conv = self.conv1d(s)  # [B, C, seq_len]
-        # s_pool = self.pool(s_conv)  # [B, C, seq_len]
-        s = s_conv + s
+        s_pool = self.pool(s_conv)  # [B, C, seq_len]
+        s = s_pool + s
         s = s.reshape(-1, self.seg_num_x, self.period_len).permute(0, 2, 1)
         y = self.mlp(s)
         y = y.permute(0, 2, 1).reshape(B, self.enc_in, self.pred_len)
