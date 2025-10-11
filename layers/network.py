@@ -73,14 +73,14 @@ class Network(nn.Module):
         B, C, I = s.shape
         t = torch.reshape(t, (B*C, I))
 
-        # s_attn_in = s.permute(0, 2, 1)  # [B, Input, Channel]
-        # s_attn_out, _ = self.channel_attn(s_attn_in, s_attn_in, s_attn_in)  # [B, Input, Channel]
-        # s = s_attn_out.permute(0, 2, 1)
+        s_attn_in = s.permute(0, 2, 1)  # [B, Input, Channel]
+        s_attn_out, _ = self.channel_attn(s_attn_in, s_attn_in, s_attn_in)  # [B, Input, Channel]
+        s = s_attn_out.permute(0, 2, 1)
 
         # Seasonal Stream: chỉ attention các channel
-        # s_conv = self.conv1d(s.reshape(-1, 1, self.seq_len)).reshape(-1, self.enc_in, self.seq_len) + s
+        s_conv = self.conv1d(s.reshape(-1, 1, self.seq_len)).reshape(-1, self.enc_in, self.seq_len) + s
 
-        s_conv = self.conv1d(s)  # [B, C, seq_len]
+        # s_conv = self.conv1d(s)  # [B, C, seq_len]
         s_pool = self.pool(s_conv)  # [B, C, seq_len]
         s = s_pool + s
         s = s.reshape(-1, self.seg_num_x, self.period_len).permute(0, 2, 1)
