@@ -6,10 +6,10 @@ class MixerBlock(nn.Module):
         super().__init__()
         self.norm = nn.LayerNorm(seq_len)
         self.mlp = nn.Sequential(
-            nn.Linear(seq_len, d_model),
+            nn.Linear(seq_len, d_model * 2),
             nn.GELU(),
             nn.Dropout(dropout),
-            nn.Linear(d_model, seq_len)
+            nn.Linear(d_model * 2, seq_len)
         )
 
     def forward(self, x):
@@ -67,11 +67,13 @@ class Network(nn.Module):
             nn.Linear(self.d_model * 2, self.seg_num_y)
         )
 
-        self.fc5 = nn.Linear(seq_len, pred_len * 2)
-        self.gelu1 = nn.GELU()
-        self.ln1 = nn.LayerNorm(pred_len * 2)
-        self.fc7 = nn.Linear(pred_len * 2, pred_len)
-        self.fc8 = nn.Linear(pred_len, pred_len)
+        self.fc = nn.Linear(seq_len, pred_len)
+
+        # self.fc5 = nn.Linear(seq_len, pred_len * 2)
+        # self.gelu1 = nn.GELU()
+        # self.ln1 = nn.LayerNorm(pred_len * 2)
+        # self.fc7 = nn.Linear(pred_len * 2, pred_len)
+        # self.fc8 = nn.Linear(pred_len, pred_len)
 
     def forward(self, s, t):
         s = s.permute(0,2,1) # [B, C, Input]
@@ -106,11 +108,12 @@ class Network(nn.Module):
         y = y.permute(0, 2, 1)
 
         # Trend Stream
-        t = self.fc5(t)
-        t = self.gelu1(t)
-        t = self.ln1(t)
-        t = self.fc7(t)
-        t = self.fc8(t)
+        # t = self.fc5(t)
+        # t = self.gelu1(t)
+        # t = self.ln1(t)
+        # t = self.fc7(t)
+        # t = self.fc8(t)
+        t = self.fc(t)
         t = torch.reshape(t, (B, C, self.pred_len))
         t = t.permute(0,2,1)
 
