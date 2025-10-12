@@ -53,9 +53,9 @@ class Network(nn.Module):
             nn.Dropout(dropout),
         )
 
-        # self.channel_attn = nn.MultiheadAttention(
-        #     embed_dim=self.enc_in, num_heads=1, batch_first=True
-        # )
+        self.channel_attn = nn.MultiheadAttention(
+            embed_dim=self.enc_in, num_heads=1, batch_first=True
+        )
 
         self.mixer = MixerBlock(channel=self.enc_in, seq_len=self.seq_len, d_model=self.d_model, dropout=dropout)
 
@@ -85,10 +85,10 @@ class Network(nn.Module):
         s_feat = s_act + s  # residual
 
         # Attention channel
-        # s_attn_in = s_feat.permute(0, 2, 1)  # [B, seq_len, C]
-        # s_attn_out, _ = self.channel_attn(s_attn_in, s_attn_in, s_attn_in)
-        # s_attn_out = s_attn_out.permute(0, 2, 1)  # [B, C, seq_len]
-        # s_fusion = s_feat + s_attn_out  # residual
+        s_attn_in = s_feat.permute(0, 2, 1)  # [B, seq_len, C]
+        s_attn_out, _ = self.channel_attn(s_attn_in, s_attn_in, s_attn_in)
+        s_attn_out = s_attn_out.permute(0, 2, 1)  # [B, C, seq_len]
+        s_fusion = s_feat + s_attn_out  # residual
 
         # Mixer block cho các chuỗi thời gian
         s_mixed = self.mixer(s_feat)  # [B, C, seq_len]
