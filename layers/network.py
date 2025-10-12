@@ -57,8 +57,10 @@ class Network(nn.Module):
             embed_dim=self.enc_in, num_heads=1, batch_first=True
         )
 
-        self.mixer = MixerBlock(channel=self.enc_in, seq_len=self.seq_len, d_model=self.d_model, dropout=dropout)
-
+        self.mixers = nn.ModuleList([
+            MixerBlock(channel=self.enc_in, seq_len=self.seq_len, d_model=self.d_model, dropout=dropout)
+            for _ in range(2)
+        ])
         self.mlp = nn.Sequential(
             nn.Linear(self.seg_num_x, self.d_model * 2),
             nn.GELU(),
