@@ -6,10 +6,10 @@ class MixerBlock(nn.Module):
         super().__init__()
         self.norm = nn.LayerNorm(seq_len)
         self.mlp = nn.Sequential(
-            nn.Linear(seq_len, d_model * expansion),
+            nn.Linear(seq_len, d_model),
             nn.GELU(),
             nn.Dropout(dropout),
-            nn.Linear(d_model * expansion, seq_len)
+            nn.Linear(d_model, seq_len)
         )
 
     def forward(self, x):
