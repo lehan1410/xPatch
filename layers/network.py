@@ -6,10 +6,10 @@ class MixerBlock(nn.Module):
         super().__init__()
         self.norm = nn.LayerNorm(seq_len)
         self.mlp = nn.Sequential(
-            nn.Linear(seq_len, d_model),
+            nn.Linear(seq_len, d_model * expansion),
             nn.GELU(),
             nn.Dropout(dropout),
-            nn.Linear(d_model, seq_len)
+            nn.Linear(d_model * expansion, seq_len)
         )
 
     def forward(self, x):
@@ -35,14 +35,12 @@ class Network(nn.Module):
         self.seg_num_x = self.seq_len // self.period_len
         self.seg_num_y = self.pred_len // self.period_len
 
-        ksizes = [max(3, self.period_len // 2), self.period_len, min(self.seq_len, self.period_len * 2)]
-        self.convs = nn.ModuleList([
-            nn.Conv1d(
-                in_channels=1, out_channels=1,
-                kernel_size=k, stride=1, padding=k // 2,
-                padding_mode="zeros", bias=False
-            ) for k in ksizes
-        ])
+        self.conv1d = nn.Conv1d(
+            in_channels=1, out_channels=1,
+            kernel_size=1 + 2 * (self.period_len // 2),
+            stride=1, padding=self.period_len // 2,
+            padding_mode="zeros", bias=False
+        )
 
         self.pool = nn.AvgPool1d(
             kernel_size=1 + 2 * (self.period_len // 2),
@@ -50,16 +48,16 @@ class Network(nn.Module):
             padding=self.period_len // 2
         )
 
-        # self.activation = nn.Sequential(
-        #     nn.LeakyReLU(negative_slope=0.01, inplace=True),
-        #     nn.Dropout(dropout),
-        # )
+        self.activation = nn.Sequential(
+            nn.LeakyReLU(negative_slope=0.01, inplace=True),
+            nn.Dropout(dropout),
+        )
 
         self.channel_attn = nn.MultiheadAttention(
             embed_dim=self.enc_in, num_heads=1, batch_first=True
         )
 
-        self.mixer = MixerBlock(channel=self.enc_in, seq_len=self.seq_len, d_model=self.d_model, dropout=dropout+0.1)
+        self.mixer = MixerBlock(channel=self.enc_in, seq_len=self.seq_len, d_model=self.d_model, dropout=dropout)
 
         self.mlp = nn.Sequential(
             nn.Linear(self.seg_num_x, self.d_model * 2),
@@ -83,14 +81,10 @@ class Network(nn.Module):
         t = torch.reshape(t, (B*C, I))
 
         # Conv1d cho từng channel riêng biệt
-        s_multi = []
-        for conv in self.convs:
-            s_conv = conv(s.reshape(-1, 1, self.seq_len)).reshape(-1, self.enc_in, self.seq_len)
-            s_multi.append(s_conv)
-        s_conv = sum(s_multi) / len(s_multi)        
+        s_conv = self.conv1d(s.reshape(-1, 1, self.seq_len)).reshape(-1, self.enc_in, self.seq_len)
         s_pool1 = self.pool(s_conv)
-        # s_act = self.activation(s_pool1)
-        s_feat = s_pool1 + s  # residual
+        s_act = self.activation(s_pool1)
+        s_feat = s_act + s  # residual
 
         # Attention channel
         s_attn_in = s_feat.permute(0, 2, 1)  # [B, seq_len, C]
@@ -99,7 +93,7 @@ class Network(nn.Module):
         s_fusion = s_feat + s_attn_out  # residual
 
         # Mixer block cho các chuỗi thời gian
-        s_mixed = self.mixer(s_fusion) + s
+        s_mixed = self.mixer(s_fusion) + s # [B, C, seq_len]
 
         # Reshape thành patch/subsequence
         s_patch = s_mixed.reshape(-1, self.seg_num_x, self.period_len).permute(0, 2, 1)
@@ -109,7 +103,7 @@ class Network(nn.Module):
         y = y.permute(0, 2, 1).reshape(B, self.enc_in, self.pred_len)
         y = y.permute(0, 2, 1)
 
-        # Trend Stream
+        # # Trend Stream
         # t = self.fc5(t)
         # t = self.gelu1(t)
         # t = self.ln1(t)
