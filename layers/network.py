@@ -4,15 +4,8 @@ from torch import nn
 class MixerBlock(nn.Module):
     def __init__(self, channel, seq_len, d_model, dropout=0.1, expansion=2):
         super().__init__()
-        self.norm1 = nn.LayerNorm(seq_len)
-        self.mlp1 = nn.Sequential(
-            nn.Linear(channel, channel * expansion),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(channel * expansion, channel)
-        )
-        self.norm2 = nn.LayerNorm(channel)
-        self.mlp2 = nn.Sequential(
+        self.norm = nn.LayerNorm(seq_len)
+        self.mlp = nn.Sequential(
             nn.Linear(seq_len, d_model * expansion),
             nn.GELU(),
             nn.Dropout(dropout),
@@ -21,17 +14,11 @@ class MixerBlock(nn.Module):
 
     def forward(self, x):
         # x: [B, C, seq_len]
-        y = self.norm1(x)
-        y = y.transpose(1, 2)  # [B, seq_len, C]
-        y = self.mlp1(y)
-        y = y.transpose(1, 2)  # [B, C, seq_len]
-        x = x + y  # residual channel
-
-        z = self.norm2(x.transpose(1, 2))  # [B, seq_len, C]
-        z = z.transpose(1, 2)  # [B, C, seq_len]
-        z = self.mlp2(z)
-        # z = z.transpose(1, 2)  # [B, C, seq_len]
-        out = x + z  # residual token
+        # Chỉ trộn thời gian cho từng channel
+        x_norm = self.norm(x)  # [B, C, seq_len]
+        # Đưa từng channel qua MLP thời gian
+        z = self.mlp(x_norm)   # [B, C, seq_len]
+        out = x + z            # residual thời gian
         return out
 
 class Network(nn.Module):
