@@ -91,7 +91,7 @@ class Network(nn.Module):
         s_fusion = s_feat + s_attn_out  # residual
 
         # Mixer block cho các chuỗi thời gian
-        s_mixed = self.mixer(s_fusion)  # [B, C, seq_len]
+        s_mixed = self.mixer(s_fusion) + s  # [B, C, seq_len]
 
         # Reshape thành patch/subsequence
         s_patch = s_mixed.reshape(-1, self.seg_num_x, self.period_len).permute(0, 2, 1)
