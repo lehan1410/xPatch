@@ -35,19 +35,19 @@ class Network(nn.Module):
         self.seg_num_x = self.seq_len // self.period_len
         self.seg_num_y = self.pred_len // self.period_len
 
-        # self.conv1d = nn.Conv1d(
-        #     in_channels=1, out_channels=1,
-        #     kernel_size=1 + 2 * (self.period_len // 2),
-        #     stride=1, padding=self.period_len // 2,
-        #     padding_mode="zeros", bias=False
-        # )
-
         self.conv1d = nn.Conv1d(
-            in_channels=self.enc_in, out_channels=self.enc_in,
+            in_channels=1, out_channels=1,
             kernel_size=1 + 2 * (self.period_len // 2),
             stride=1, padding=self.period_len // 2,
-            padding_mode="zeros", bias=False, groups=self.enc_in
+            padding_mode="zeros", bias=False
         )
+
+        # self.conv1d = nn.Conv1d(
+        #     in_channels=self.enc_in, out_channels=self.enc_in,
+        #     kernel_size=1 + 2 * (self.period_len // 2),
+        #     stride=1, padding=self.period_len // 2,
+        #     padding_mode="zeros", bias=False, groups=self.enc_in
+        # )
 
         self.pool = nn.AvgPool1d(
             kernel_size=1 + 2 * (self.period_len // 2),
@@ -86,8 +86,8 @@ class Network(nn.Module):
         t = torch.reshape(t, (B*C, I))
 
         # Conv1d cho từng channel riêng biệt
-        # s_conv = self.conv1d(s.reshape(-1, 1, self.seq_len)).reshape(-1, self.enc_in, self.seq_len)
-        s_conv = self.conv1d(s)
+        s_conv = self.conv1d(s.reshape(-1, 1, self.seq_len)).reshape(-1, self.enc_in, self.seq_len)
+        # s_conv = self.conv1d(s)
         s_pool1 = self.pool(s_conv)
         s_act = self.activation(s_pool1)
         s_feat = s_act + s  # residual
