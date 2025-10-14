@@ -3,7 +3,8 @@ import torch.nn as nn
 import math
 
 from layers.decomp import DECOMP
-from layers.network import Network
+# from layers.network import Network
+from layers.net_linear import Network
 # from layers.network_mlp import NetworkMLP # For ablation study with MLP-only stream
 # from layers.network_cnn import NetworkCNN # For ablation study with CNN-only stream
 from layers.revin import RevIN
@@ -36,7 +37,8 @@ class Model(nn.Module):
         dropout = configs.dropout
 
         self.decomp = DECOMP(self.ma_type, alpha, beta, period_len)
-        self.net = Network(seq_len, pred_len, c_in, period_len, d_model, dropout)
+        # self.net = Network(seq_len, pred_len, c_in, period_len, d_model, dropout)
+        self.net = Network(seq_len, pred_len, c_in, period_len, d_model)
         # self.net = Network(seq_len, pred_len, patch_len, stride, padding_patch)
         # self.net_mlp = NetworkMLP(seq_len, pred_len) # For ablation study with MLP-only stream
         # self.net_cnn = NetworkCNN(seq_len, pred_len, patch_len, stride, padding_patch) # For ablation study with CNN-only stream
