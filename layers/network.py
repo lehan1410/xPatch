@@ -55,10 +55,10 @@ class Network(nn.Module):
             padding=self.period_len // 2
         )
 
-        self.activation = nn.Sequential(
-            nn.LeakyReLU(negative_slope=0.01, inplace=True),
-            nn.Dropout(dropout),
-        )
+        # self.activation = nn.Sequential(
+        #     nn.LeakyReLU(negative_slope=0.01, inplace=True),
+        #     nn.Dropout(dropout),
+        # )
 
         self.channel_attn = nn.MultiheadAttention(
             embed_dim=self.enc_in, num_heads=1, batch_first=True
@@ -89,8 +89,8 @@ class Network(nn.Module):
         s_conv = self.conv1d(s.reshape(-1, 1, self.seq_len)).reshape(-1, self.enc_in, self.seq_len)
         # s_conv = self.conv1d(s)
         s_pool1 = self.pool(s_conv)
-        s_act = self.activation(s_pool1)
-        s_feat = s_act + s  # residual
+        # s_act = self.activation(s_pool1)
+        s_feat = s_pool1 + s  # residual
 
         # Attention channel
         s_attn_in = s_feat.permute(0, 2, 1)  # [B, seq_len, C]
