@@ -10,6 +10,7 @@ from exp.exp_basic import Exp_Basic
 from models import FEDformer
 from utils.tools import EarlyStopping, adjust_learning_rate, visual
 from utils.metrics import metric
+from ptflops import get_model_complexity_info
 
 
 warnings.filterwarnings('ignore')
@@ -40,6 +41,26 @@ class Exp_Main(Exp_Basic):
     def _select_criterion(self):
         criterion = nn.MSELoss()
         return criterion
+
+    def test_params_flop(model,x_shape):
+        """
+        If you want to thest former's flop, you need to give default value to inputs in model.forward(), the following code can only pass one argument to forward()
+        """
+        # model_params = 0
+        # for parameter in model.parameters():
+        #     model_params += parameter.numel()
+        #     print('INFO: Trainable parameter count: {:.2f}M'.format(model_params / 1000000.0))
+        # from ptflops import get_model_complexity_info
+        # with torch.cuda.device(0):
+        #     macs, params = get_model_complexity_info(model.cuda(), x_shape, as_strings=True, print_per_layer_stat=True)
+        #     # print('Flops:' + flops)
+        #     # print('Params:' + params)
+        #     print('{:<30}  {:<8}'.format('Computational complexity: ', macs))
+        #     print('{:<30}  {:<8}'.format('Number of parameters: ', params))
+        with torch.cuda.device(0):
+            macs, params = get_model_complexity_info(model.cuda(), x_shape, as_strings=True, print_per_layer_stat=False)
+            print('{:<30}  {:<8}'.format('Computational complexity: ', macs))
+            print('{:<30}  {:<8}'.format('Number of parameters: ', params))
 
     def vali(self, vali_data, vali_loader, criterion):
         total_loss = []
@@ -96,6 +117,7 @@ class Exp_Main(Exp_Basic):
 
         model_optim = self._select_optimizer()
         criterion = self._select_criterion()
+        epoch_times = []
 
         if self.args.use_amp:
             scaler = torch.cuda.amp.GradScaler()
@@ -158,6 +180,9 @@ class Exp_Main(Exp_Basic):
                 else:
                     loss.backward()
                     model_optim.step()
+            
+            epoch_duration = time.time() - epoch_time
+            epoch_times.append(epoch_duration)
 
             print("Epoch: {} cost time: {}".format(epoch + 1, time.time() - epoch_time))
             train_loss = np.average(train_loss)
@@ -173,6 +198,8 @@ class Exp_Main(Exp_Basic):
 
             adjust_learning_rate(model_optim, epoch + 1, self.args)
 
+        avg_epoch_time = np.mean(epoch_times)
+        print(f"Average epoch time: {avg_epoch_time:.2f} seconds")
         best_model_path = path + '/' + 'checkpoint.pth'
         self.model.load_state_dict(torch.load(best_model_path))
 
@@ -233,6 +260,8 @@ class Exp_Main(Exp_Basic):
                     pd = np.concatenate((input[0, :, -1], pred[0, :, -1]), axis=0)
                     visual(gt, pd, os.path.join(folder_path, str(i) + '.pdf'))
 
+        if test==1:
+            self.test_params_flop(self.model, (batch_x.shape[1],batch_x.shape[2]))
         preds = np.array(preds)
         trues = np.array(trues)
         print('test shape:', preds.shape, trues.shape)

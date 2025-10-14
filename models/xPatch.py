@@ -16,23 +16,28 @@ class Model(nn.Module):
         seq_len = configs.seq_len   # lookback window L
         pred_len = configs.pred_len # prediction length (96, 192, 336, 720)
         c_in = configs.enc_in       # input channels
+        d_model = configs.d_model    # dimension of model
+        period_len = configs.period_len  # period length
 
         # Patching
         patch_len = configs.patch_len
         stride = configs.stride
         padding_patch = configs.padding_patch
 
+        # Normalization
         self.revin = configs.revin
         self.revin_layer = RevIN(c_in,affine=True,subtract_last=False)
 
+        # Moving Average
         self.ma_type = configs.ma_type
         alpha = configs.alpha       # smoothing factor for EMA (Exponential Moving Average)
-        beta = configs.beta 
+        beta = configs.beta         # smoothing factor for DEMA (Double Exponential Moving Average)
 
         dropout = configs.dropout
 
-        self.decomp = DECOMP(self.ma_type, alpha, beta, seq_len=seq_len, enc_in=c_in)
-        self.net = Network(seq_len, pred_len, patch_len, stride, padding_patch, c_in, dropout)
+        self.decomp = DECOMP(self.ma_type, alpha, beta, period_len)
+        self.net = Network(seq_len, pred_len, c_in, period_len, d_model, dropout)
+        # self.net = Network(seq_len, pred_len, patch_len, stride, padding_patch)
         # self.net_mlp = NetworkMLP(seq_len, pred_len) # For ablation study with MLP-only stream
         # self.net_cnn = NetworkCNN(seq_len, pred_len, patch_len, stride, padding_patch) # For ablation study with CNN-only stream
 
@@ -47,6 +52,9 @@ class Model(nn.Module):
             x = self.net(x, x)
             # x = self.net_mlp(x) # For ablation study with MLP-only stream
             # x = self.net_cnn(x) # For ablation study with CNN-only stream
+        if self.ma_type == 'stl':
+            seasonal_init, trend_init, resid_init = self.decomp(x)
+            x = self.net(seasonal_init, trend_init, resid_init)
         else:
             seasonal_init, trend_init = self.decomp(x)
             x = self.net(seasonal_init, trend_init)

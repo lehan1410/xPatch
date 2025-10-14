@@ -22,7 +22,8 @@ parser.add_argument('--train_only', type=bool, required=False, default=False, he
 parser.add_argument('--model_id', type=str, required=True, default='test', help='model id')
 parser.add_argument('--model', type=str, required=True, default='xPatch',
                     help='model name, options: [xPatch]')
-
+parser.add_argument('--period_len', type=int, default=24, help='period length')
+parser.add_argument('--d_model', type=int, default=128, help='dimension of model')
 # data loader
 parser.add_argument('--data', type=str, required=True, default='ETTh1', help='dataset type')
 parser.add_argument('--root_path', type=str, default='./dataset', help='root path of the data file')
@@ -43,7 +44,7 @@ parser.add_argument('--pred_len', type=int, default=96, help='prediction sequenc
 parser.add_argument('--enc_in', type=int, default=7, help='encoder input size')
 
 # Patching
-parser.add_argument('--patch_len', type=int, default=16, help='patch length')
+parser.add_argument('--patch_len', type=int, default=48, help='patch length')
 parser.add_argument('--stride', type=int, default=8, help='stride')
 parser.add_argument('--padding_patch', default='end', help='None: None; end: padding on the end')
 
