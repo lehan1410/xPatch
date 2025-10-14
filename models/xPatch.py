@@ -22,17 +22,17 @@ class Model(nn.Module):
         stride = configs.stride
         padding_patch = configs.padding_patch
 
-        # Normalization (enable RevIN by default; can be disabled via configs.revin=False)
-        self.revin = getattr(configs, 'revin', True)
+        self.revin = configs.revin
         self.revin_layer = RevIN(c_in,affine=True,subtract_last=False)
 
-        # Moving Average (use best decomposition: multi_emd)
-        self.ma_type = getattr(configs, 'ma_type', 'multi_emd')  # default to best
-        alpha = getattr(configs, 'alpha', 0.3)
-        beta = getattr(configs, 'beta', 0.3)
+        self.ma_type = configs.ma_type
+        alpha = configs.alpha       # smoothing factor for EMA (Exponential Moving Average)
+        beta = configs.beta 
+
+        dropout = configs.dropout
 
         self.decomp = DECOMP(self.ma_type, alpha, beta, seq_len=seq_len, enc_in=c_in)
-        self.net = Network(seq_len, pred_len, patch_len, stride, padding_patch, c_in)
+        self.net = Network(seq_len, pred_len, patch_len, stride, padding_patch, c_in, dropout)
         # self.net_mlp = NetworkMLP(seq_len, pred_len) # For ablation study with MLP-only stream
         # self.net_cnn = NetworkCNN(seq_len, pred_len, patch_len, stride, padding_patch) # For ablation study with CNN-only stream
 
