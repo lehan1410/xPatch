@@ -21,6 +21,22 @@ class MixerBlock(nn.Module):
         z = self.mlp(x_norm)   # [B, C, seq_len]
         out = x + z            # residual thời gian
         return out
+    
+class CausalConvBlock(nn.Module):
+    def __init__(self, d_model, kernel_size=5, dropout=0.0):
+        super(CausalConvBlock, self).__init__()
+        module_list = [
+            nn.ReplicationPad1d((kernel_size - 1, kernel_size - 1)),
+            nn.Conv1d(d_model, d_model, kernel_size=kernel_size),
+            nn.LeakyReLU(negative_slope=0.01, inplace=True),
+            nn.Dropout(dropout),
+            nn.Conv1d(d_model, d_model, kernel_size=kernel_size),
+            nn.Tanh()
+        ]
+        self.causal_conv = nn.Sequential(*module_list)
+
+    def forward(self, x):
+        return self.causal_conv(x)
 
 class Network(nn.Module):
     def __init__(self, seq_len, pred_len, c_in, period_len, d_model, dropout=0.1):
@@ -36,18 +52,24 @@ class Network(nn.Module):
         self.seg_num_x = self.seq_len // self.period_len
         self.seg_num_y = self.pred_len // self.period_len
 
-        self.conv1d = nn.Conv1d(
-            in_channels=self.enc_in, out_channels=self.enc_in,
+        # self.conv1d = nn.Conv1d(
+        #     in_channels=self.enc_in, out_channels=self.enc_in,
+        #     kernel_size=1 + 2 * (self.period_len // 2),
+        #     stride=1, padding=self.period_len // 2,
+        #     padding_mode="zeros", bias=False, groups=self.enc_in
+        # )
+
+        self.conv1d = CausalConvBlock(
+            d_model=self.enc_in,
             kernel_size=1 + 2 * (self.period_len // 2),
-            stride=1, padding=self.period_len // 2,
-            padding_mode="zeros", bias=False, groups=self.enc_in
+            dropout=self.dropout
         )
 
-        self.pool = nn.AvgPool1d(
-            kernel_size=1 + 2 * (self.period_len // 2),
-            stride=1,
-            padding=self.period_len // 2
-        )
+        # self.pool = nn.AvgPool1d(
+        #     kernel_size=1 + 2 * (self.period_len // 2),
+        #     stride=1,
+        #     padding=self.period_len // 2
+        # )
 
         self.mixer = MixerBlock(channel=self.enc_in, seq_len=self.seq_len, d_model=self.d_model, dropout=dropout)
 
@@ -78,8 +100,8 @@ class Network(nn.Module):
 
         # Seasonal Stream: Conv1d + Pooling
         s_conv = self.conv1d(s)  # [B, C, seq_len]
-        s_pool = self.pool(s_conv)  # [B, C, seq_len]
-        s = s_pool + s
+        # s_pool = self.pool(s_conv)  # [B, C, seq_len]
+        s = s_conv + s
 
         s = self.mixer(s)
         s = s.reshape(-1, self.seg_num_x, self.period_len).permute(0, 2, 1)
