@@ -30,6 +30,8 @@ class ChannelSEGate(nn.Module):
     def forward(self, x):
         # x: [B, C, T]
         w = x.mean(dim=-1)  # [B, C]
+        if w.dim() == 1:
+            w = w.unsqueeze(0)
         w = self.fc1(w)
         w = self.relu(w)
         w = self.fc2(w)
