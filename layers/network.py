@@ -4,7 +4,7 @@ from torch import nn
 class MixerBlock(nn.Module):
     def __init__(self, channel, seq_len, d_model, dropout=0.1, expansion=2):
         super().__init__()
-        self.norm = nn.LayerNorm(d_model)
+        self.norm = nn.LayerNorm(seq_len)
         self.mlp = nn.Sequential(
             nn.Linear(seq_len, d_model * expansion),
             nn.GELU(),
@@ -20,22 +20,6 @@ class MixerBlock(nn.Module):
         z = self.mlp(x_norm)   # [B, C, seq_len]
         out = x + z            # residual thời gian
         return out
-
-class DataRepresentation(nn.Module):
-    def __init__(self, c_in, seq_len, d_model, dropout=0.1):
-        super().__init__()
-        self.fc = nn.Linear(seq_len, d_model)
-        self.act = nn.GELU()
-        self.norm = nn.LayerNorm(d_model)
-        self.dropout = nn.Dropout(dropout)
-
-    def forward(self, x):
-        # x: [B, C, seq_len]
-        x = self.fc(x)
-        x = self.act(x)
-        x = self.norm(x)
-        x = self.dropout(x)
-        return x
 
 class Network(nn.Module):
     def __init__(self, seq_len, pred_len, c_in, period_len, d_model, dropout=0.1):
@@ -75,8 +59,6 @@ class Network(nn.Module):
 
         self.mixer = MixerBlock(channel=self.enc_in, seq_len=self.seq_len, d_model=self.d_model, dropout=dropout)
 
-        self.data_repr = DataRepresentation(c_in=self.enc_in, seq_len=self.seq_len, d_model=self.d_model, dropout=dropout)
-
         self.mlp = nn.Sequential(
             nn.Linear(self.seg_num_x, self.d_model * 2),
             nn.GELU(),
@@ -106,13 +88,10 @@ class Network(nn.Module):
         s_attn_in = s.permute(0, 2, 1)  # [B, seq_len, C]
         s_attn_out, _ = self.channel_attn(s_attn_in, s_attn_in, s_attn_in)
         s_attn_out = s_attn_out.permute(0, 2, 1)  # [B, C, seq_len]
-        s_fusion = s_feat + s_attn_out + s
-
-        # Thêm lớp biểu diễn dữ liệu sau attention
-        s_repr = self.data_repr(s_fusion)  # [B, C, d_model]
+        s_fusion = s_feat + s_attn_out  + s
 
         # Mixer block cho các chuỗi thời gian
-        s_mixed = self.mixer(s_repr)  # [B, C, d_model]
+        s_mixed = self.mixer(s_fusion)  # [B, C, seq_len]
 
         # Reshape thành patch/subsequence
         s_patch = s_mixed.reshape(-1, self.seg_num_x, self.period_len).permute(0, 2, 1)
