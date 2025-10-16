@@ -22,15 +22,15 @@ class MixerBlock(nn.Module):
         return out
 
 class Network(nn.Module):
-    def __init__(self, seq_len, pred_len, c_in, period_len, d_model):
+    def __init__(self, seq_len, pred_len, c_in, period_len, d_model, dropout):
         super(Network, self).__init__()
 
         # Parameters
         self.pred_len = pred_len
         self.seq_len = seq_len
         self.enc_in  = c_in
-        self.period_len = 24
-        self.d_model = 128
+        self.period_len = period_len
+        self.d_model = d_model
 
         self.seg_num_x = self.seq_len // self.period_len
         self.seg_num_y = self.pred_len // self.period_len
@@ -46,6 +46,11 @@ class Network(nn.Module):
             kernel_size=1 + 2 * (self.period_len // 2),
             stride=1,
             padding=self.period_len // 2
+        )
+
+        self.activation = nn.Sequential(
+            nn.LeakyReLU(negative_slope=0.01, inplace=True),
+            nn.Dropout(dropout),
         )
 
         self.mixer = MixerBlock(channel=self.enc_in, seq_len=self.seq_len, d_model=self.d_model, dropout=dropout)
@@ -78,7 +83,8 @@ class Network(nn.Module):
         # Seasonal Stream: Conv1d + Pooling
         s_conv = self.conv1d(s)  # [B, C, seq_len]
         s_pool = self.pool(s_conv)  # [B, C, seq_len]
-        s = s_pool + s
+        s_act = self.activation(s_pool)
+        s = s_act + s
         s = self.mixer(s)
         s = s.reshape(-1, self.seg_num_x, self.period_len).permute(0, 2, 1)
         y = self.mlp(s)
