@@ -20,23 +20,23 @@ class MixerBlock(nn.Module):
         z = self.mlp(x_norm)   # [B, C, seq_len]
         out = x + z            # residual thời gian
         return out
-class ChannelSEGate(nn.Module):
-    def __init__(self, c_in, reduction=16):
+
+class DataRepresentation(nn.Module):
+    def __init__(self, c_in, seq_len, d_model, dropout=0.1):
         super().__init__()
-        self.fc1 = nn.Linear(c_in, c_in // reduction)
-        self.relu = nn.ReLU()
-        self.fc2 = nn.Linear(c_in // reduction, c_in)
-        self.sigmoid = nn.Sigmoid()
+        self.fc = nn.Linear(seq_len, d_model)
+        self.act = nn.GELU()
+        self.norm = nn.LayerNorm(d_model)
+        self.dropout = nn.Dropout(dropout)
+
     def forward(self, x):
-        # x: [B, C, T]
-        w = x.mean(dim=-1)  # [B, C]
-        if w.dim() == 1:
-            w = w.unsqueeze(0)
-        w = self.fc1(w)
-        w = self.relu(w)
-        w = self.fc2(w)
-        w = self.sigmoid(w).unsqueeze(-1)  # [B, C, 1]
-        return x * w
+        # x: [B, C, seq_len]
+        x = self.fc(x)
+        x = self.act(x)
+        x = self.norm(x)
+        x = self.dropout(x)
+        return x
+
 class Network(nn.Module):
     def __init__(self, seq_len, pred_len, c_in, period_len, d_model, dropout=0.1):
         super(Network, self).__init__()
@@ -69,9 +69,13 @@ class Network(nn.Module):
             nn.Dropout(dropout),
         )
 
-        self.channel_se = ChannelSEGate(c_in=self.enc_in, reduction=16)
+        self.channel_attn = nn.MultiheadAttention(
+            embed_dim=self.enc_in, num_heads=1, batch_first=True
+        )
 
         self.mixer = MixerBlock(channel=self.enc_in, seq_len=self.seq_len, d_model=self.d_model, dropout=dropout)
+
+        self.data_repr = DataRepresentation(c_in=self.enc_in, seq_len=self.seq_len, d_model=self.d_model, dropout=dropout)
 
         self.mlp = nn.Sequential(
             nn.Linear(self.seg_num_x, self.d_model * 2),
@@ -96,13 +100,19 @@ class Network(nn.Module):
         s_conv = self.conv1d(s.reshape(-1, 1, self.seq_len)).reshape(-1, self.enc_in, self.seq_len)
         s_pool1 = self.pool(s_conv)
         s_act = self.activation(s_pool1)
-        s_feat = s_act + s  # residual
+        s_feat = s_act
 
-        # ChannelSEGate thay cho attention channel
-        s_fusion = self.channel_se(s_feat)  # [B, C, seq_len]
+        # Attention channel
+        s_attn_in = s.permute(0, 2, 1)  # [B, seq_len, C]
+        s_attn_out, _ = self.channel_attn(s_attn_in, s_attn_in, s_attn_in)
+        s_attn_out = s_attn_out.permute(0, 2, 1)  # [B, C, seq_len]
+        s_fusion = s_feat + s_attn_out + s
+
+        # Thêm lớp biểu diễn dữ liệu sau attention
+        s_repr = self.data_repr(s_fusion)  # [B, C, d_model]
 
         # Mixer block cho các chuỗi thời gian
-        s_mixed = self.mixer(s_fusion)  # [B, C, seq_len]
+        s_mixed = self.mixer(s_repr)  # [B, C, d_model]
 
         # Reshape thành patch/subsequence
         s_patch = s_mixed.reshape(-1, self.seg_num_x, self.period_len).permute(0, 2, 1)
