@@ -20,7 +20,21 @@ class MixerBlock(nn.Module):
         z = self.mlp(x_norm)   # [B, C, seq_len]
         out = x + z            # residual thời gian
         return out
-
+class ChannelSEGate(nn.Module):
+    def __init__(self, c_in, reduction=16):
+        super().__init__()
+        self.fc1 = nn.Linear(c_in, c_in // reduction)
+        self.relu = nn.ReLU()
+        self.fc2 = nn.Linear(c_in // reduction, c_in)
+        self.sigmoid = nn.Sigmoid()
+    def forward(self, x):
+        # x: [B, C, T]
+        w = x.mean(dim=-1)  # [B, C]
+        w = self.fc1(w)
+        w = self.relu(w)
+        w = self.fc2(w)
+        w = self.sigmoid(w).unsqueeze(-1)  # [B, C, 1]
+        return x * w
 class Network(nn.Module):
     def __init__(self, seq_len, pred_len, c_in, period_len, d_model, dropout=0.1):
         super(Network, self).__init__()
@@ -53,9 +67,7 @@ class Network(nn.Module):
             nn.Dropout(dropout),
         )
 
-        self.channel_attn = nn.MultiheadAttention(
-            embed_dim=self.enc_in, num_heads=1, batch_first=True
-        )
+        self.channel_se = ChannelSEGate(c_in=self.enc_in, reduction=16)
 
         self.mixer = MixerBlock(channel=self.enc_in, seq_len=self.seq_len, d_model=self.d_model, dropout=dropout)
 
@@ -84,11 +96,8 @@ class Network(nn.Module):
         s_act = self.activation(s_pool1)
         s_feat = s_act + s  # residual
 
-        # Attention channel
-        s_attn_in = s_feat.permute(0, 2, 1)  # [B, seq_len, C]
-        s_attn_out, _ = self.channel_attn(s_attn_in, s_attn_in, s_attn_in)
-        s_attn_out = s_attn_out.permute(0, 2, 1)  # [B, C, seq_len]
-        s_fusion = s_feat + s_attn_out  # residual
+        # ChannelSEGate thay cho attention channel
+        s_fusion = self.channel_se(s_feat)  # [B, C, seq_len]
 
         # Mixer block cho các chuỗi thời gian
         s_mixed = self.mixer(s_fusion)  # [B, C, seq_len]
