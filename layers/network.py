@@ -4,7 +4,7 @@ from torch import nn
 class MixerBlock(nn.Module):
     def __init__(self, channel, seq_len, d_model, dropout=0.1, expansion=2):
         super().__init__()
-        self.norm = nn.LayerNorm(seq_len)
+        self.norm = nn.LayerNorm(d_model)
         self.mlp = nn.Sequential(
             nn.Linear(seq_len, d_model * expansion),
             nn.GELU(),
