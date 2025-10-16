@@ -54,7 +54,7 @@ class Network(nn.Module):
         )
 
         self.channel_attn = nn.MultiheadAttention(
-            embed_dim=self.enc_in, num_heads=1, batch_first=True
+            embed_dim=self.enc_in, num_heads=3, batch_first=True
         )
 
         self.mixer = MixerBlock(channel=self.enc_in, seq_len=self.seq_len, d_model=self.d_model, dropout=dropout)
