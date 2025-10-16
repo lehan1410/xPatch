@@ -46,8 +46,8 @@ class Network(nn.Module):
         self.pred_len = pred_len
         self.seq_len = seq_len
         self.enc_in  = c_in
-        self.period_len = 24
-        self.d_model = 128
+        self.period_len = period_len
+        self.d_model = d_model
 
         self.seg_num_x = self.seq_len // self.period_len
         self.seg_num_y = self.pred_len // self.period_len
@@ -62,7 +62,7 @@ class Network(nn.Module):
         self.conv1d = CausalConvBlock(
             d_model=self.enc_in,
             kernel_size=1 + 2 * (self.period_len // 2),
-            dropout=self.dropout
+            dropout=dropout
         )
 
         # self.pool = nn.AvgPool1d(
