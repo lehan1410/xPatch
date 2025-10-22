@@ -59,6 +59,7 @@ def data_provider(args, flag):
 
 def data_provider1(args, flag):
     Data = data_dict['ETTh1']
+    print(Data)
     timeenc = 0 if args.embed != 'timeF' else 1
     train_only = args.train_only
 
