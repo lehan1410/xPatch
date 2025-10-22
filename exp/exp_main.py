@@ -1,4 +1,4 @@
-from data_provider.data_factory import data_provider
+from data_provider.data_factory import data_provider,data_provider1
 from exp.exp_basic import Exp_Basic
 from models import xPatch
 from utils.tools import EarlyStopping, adjust_learning_rate, visual
@@ -43,6 +43,10 @@ class Exp_Main(Exp_Basic):
 
     def _get_data(self, flag):
         data_set, data_loader = data_provider(self.args, flag)
+        return data_set, data_loader
+    
+    def _get_data1(self, flag):
+        data_set, data_loader = data_provider1(self.args, flag)
         return data_set, data_loader
 
     def _select_optimizer(self):
@@ -109,7 +113,7 @@ class Exp_Main(Exp_Basic):
     def train(self, setting):
         train_data, train_loader = self._get_data(flag='train')
         vali_data, vali_loader = self._get_data(flag='val')
-        test_data, test_loader = self._get_data(flag='test')
+        test_data, test_loader = self._get_data1(flag='test')
 
         path = os.path.join(self.args.checkpoints, setting)
         if not os.path.exists(path):
@@ -250,7 +254,7 @@ class Exp_Main(Exp_Basic):
         return self.model
 
     def test(self, setting, test=0):
-        test_data, test_loader = self._get_data(flag='test')
+        test_data, test_loader = self._get_data1(flag='test')
         
         if test:
             print('loading model')
