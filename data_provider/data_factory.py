@@ -85,7 +85,7 @@ def data_provider1(args, flag):
 
     data_set = Data(
         root_path=args.root_path,
-        data_path=args.data_path,
+        data_path="ETTh1.csv",
         flag=flag,
         size=[args.seq_len, args.label_len, args.pred_len],
         features=args.features,
